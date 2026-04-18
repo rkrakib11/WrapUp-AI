@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <title>Chatbot Icon - Option 1: Electric Blue + Cyan</title>
+
+  <!-- Outer glow ring -->
+  <circle cx="100" cy="100" r="90" fill="none" stroke="#38ECFF" stroke-width="2" stroke-dasharray="8 5" opacity="0.6"/>
+
+  <!-- Main body -->
+  <circle cx="100" cy="100" r="78" fill="#1141C7"/>
+  <circle cx="100" cy="100" r="68" fill="#1A52E8"/>
+
+  <!-- Face plate -->
+  <rect x="62" y="72" width="76" height="56" rx="12" fill="#0D1B3E"/>
+
+  <!-- Eyes -->
+  <circle cx="82" cy="92" r="9" fill="#38ECFF" opacity="0.15"/>
+  <circle cx="82" cy="92" r="6" fill="#38ECFF"/>
+  <circle cx="84" cy="90" r="2" fill="white" opacity="0.8"/>
+
+  <circle cx="118" cy="92" r="9" fill="#38ECFF" opacity="0.15"/>
+  <circle cx="118" cy="92" r="6" fill="#38ECFF"/>
+  <circle cx="120" cy="90" r="2" fill="white" opacity="0.8"/>
+
+  <!-- Mouth -->
+  <rect x="78" y="108" width="44" height="8" rx="4" fill="#38ECFF" opacity="0.8"/>
+  <rect x="84" y="108" width="8" height="8" rx="2" fill="#1A52E8"/>
+  <rect x="96" y="108" width="8" height="8" rx="2" fill="#1A52E8"/>
+  <rect x="108" y="108" width="8" height="8" rx="2" fill="#1A52E8"/>
+
+  <!-- Antenna -->
+  <line x1="100" y1="72" x2="100" y2="52" stroke="#38ECFF" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="100" cy="48" r="6" fill="#38ECFF"/>
+  <circle cx="100" cy="48" r="3" fill="#0D1B3E"/>
+
+  <!-- Ear bolts -->
+  <circle cx="22" cy="100" r="8" fill="#1141C7" stroke="#38ECFF" stroke-width="1.5"/>
+  <circle cx="178" cy="100" r="8" fill="#1141C7" stroke="#38ECFF" stroke-width="1.5"/>
+
+  <!-- Label -->
+  <text x="100" y="168" font-family="monospace" font-size="11" fill="#38ECFF" text-anchor="middle" opacity="0.9">Option 1</text>
+  <text x="100" y="182" font-family="monospace" font-size="9" fill="#7AADFF" text-anchor="middle">Electric Blue + Cyan</text>
+</svg>

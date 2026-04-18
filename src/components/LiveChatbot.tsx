@@ -144,19 +144,41 @@ export default function LiveChatbot() {
       {/* Chat FAB */}
       <motion.button
         onClick={() => { setOpen(!open); setShowTooltip(false); }}
-        className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-xl shadow-primary/25 hover:scale-105 transition-transform"
+        className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-[#0D1B3E] flex items-center justify-center hover:scale-105 transition-transform overflow-hidden"
         whileTap={{ scale: 0.95 }}
+        animate={{
+          boxShadow: [
+            "0 0 20px 2px rgba(56, 236, 255, 0.45), 0 0 40px 4px rgba(26, 82, 232, 0.3)",
+            "0 0 36px 10px rgba(56, 236, 255, 0.65), 0 0 72px 16px rgba(26, 82, 232, 0.45)",
+            "0 0 20px 2px rgba(56, 236, 255, 0.45), 0 0 40px 4px rgba(26, 82, 232, 0.3)",
+          ],
+        }}
+        transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
         aria-label={open ? "Close chat" : "Open chat"}
       >
         <AnimatePresence mode="wait">
           {open ? (
-            <motion.span key="close" initial={{ rotate: -90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: 90, opacity: 0 }} transition={{ duration: 0.15 }}>
+            <motion.span
+              key="close"
+              initial={{ rotate: -90, opacity: 0 }}
+              animate={{ rotate: 0, opacity: 1 }}
+              exit={{ rotate: 90, opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="text-white"
+            >
               <X className="w-6 h-6" />
             </motion.span>
           ) : (
-            <motion.span key="open" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }} transition={{ duration: 0.15 }} className="text-2xl leading-none">
-              🤖
-            </motion.span>
+            <motion.img
+              key="open"
+              src="/echo.svg"
+              alt="Echo"
+              className="w-14 h-14"
+              initial={{ scale: 0.5, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.5, opacity: 0 }}
+              transition={{ duration: 0.15 }}
+            />
           )}
         </AnimatePresence>
       </motion.button>
@@ -172,9 +194,9 @@ export default function LiveChatbot() {
             className="fixed bottom-24 right-6 z-50 w-[360px] max-w-[calc(100vw-2rem)] h-[500px] max-h-[calc(100vh-8rem)] rounded-2xl border border-border/50 bg-card/95 backdrop-blur-xl shadow-2xl flex flex-col overflow-hidden"
           >
             {/* Header */}
-            <div className="px-4 py-3 border-b border-border/30 bg-primary/5 flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-primary/15 flex items-center justify-center">
-                <Bot className="w-5 h-5 text-primary" />
+            <div className="px-4 py-3 border-b border-border/30 bg-emerald-500/5 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-emerald-500/15 flex items-center justify-center">
+                <Bot className="w-5 h-5 text-emerald-400" />
               </div>
               <div>
                 <p className="text-sm font-semibold text-foreground">Echo</p>
@@ -188,14 +210,14 @@ export default function LiveChatbot() {
               {messages.map((m, i) => (
                 <div key={i} className={`flex gap-2 ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                   {m.role === "assistant" && (
-                    <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0 mt-1">
-                      <Bot className="w-3.5 h-3.5 text-primary" />
+                    <div className="w-6 h-6 rounded-full bg-emerald-500/15 flex items-center justify-center flex-shrink-0 mt-1">
+                      <Bot className="w-3.5 h-3.5 text-emerald-400" />
                     </div>
                   )}
                   <div
                     className={`max-w-[80%] px-3 py-2 rounded-xl text-sm leading-relaxed ${
                       m.role === "user"
-                        ? "bg-primary text-primary-foreground rounded-br-sm"
+                        ? "bg-gradient-to-br from-emerald-400 to-cyan-500 text-white rounded-br-sm"
                         : "bg-muted/60 text-foreground rounded-bl-sm"
                     }`}
                   >
@@ -216,8 +238,8 @@ export default function LiveChatbot() {
               ))}
               {loading && messages[messages.length - 1]?.role === "user" && (
                 <div className="flex gap-2">
-                  <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0">
-                    <Bot className="w-3.5 h-3.5 text-primary" />
+                  <div className="w-6 h-6 rounded-full bg-emerald-500/15 flex items-center justify-center flex-shrink-0">
+                    <Bot className="w-3.5 h-3.5 text-emerald-400" />
                   </div>
                   <div className="bg-muted/60 px-3 py-2 rounded-xl rounded-bl-sm">
                     <span className="flex gap-1">
@@ -241,13 +263,13 @@ export default function LiveChatbot() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   placeholder="Type a message…"
-                  className="flex-1 bg-muted/40 border border-border/30 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="flex-1 bg-muted/40 border border-border/30 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
                   disabled={loading}
                 />
                 <button
                   type="submit"
                   disabled={loading || !input.trim()}
-                  className="w-9 h-9 rounded-lg bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 transition-colors disabled:opacity-50"
+                  className="w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-400 to-cyan-500 text-white flex items-center justify-center hover:opacity-90 transition-opacity disabled:opacity-50"
                 >
                   <Send className="w-4 h-4" />
                 </button>

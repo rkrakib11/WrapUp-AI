@@ -24,6 +24,7 @@ import FAQSection from "@/components/landing/FAQSection";
 import ContactSection from "@/components/landing/ContactSection";
 import CTASection from "@/components/landing/CTASection";
 import Footer from "@/components/landing/Footer";
+import AmbientMusic from "@/components/landing/AmbientMusic";
 
 export default function LandingPage() {
   useEffect(() => {
@@ -62,6 +63,7 @@ export default function LandingPage() {
         <CTASection />
         <Footer />
       </div>
+      <AmbientMusic />
     </div>
   );
 }
