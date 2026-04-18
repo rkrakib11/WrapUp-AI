@@ -56,16 +56,9 @@ export default function AnimatedBackground() {
       opacity: 0.9,
     });
     const nodes = new THREE.Points(nodeGeometry, nodeMaterial);
-    scene.add(nodes);
-
-    // TEMP DEBUG: remove once the node field is confirmed visible.
-    const testGeo = new THREE.SphereGeometry(1, 16, 16);
-    const testMat = new THREE.MeshBasicMaterial({
-      color: 0x6366f1,
-      wireframe: true,
-    });
-    const testMesh = new THREE.Mesh(testGeo, testMat);
-    scene.add(testMesh);
+    const nodesGroup = new THREE.Group();
+    nodesGroup.add(nodes);
+    scene.add(nodesGroup);
 
     const linePositions = new Float32Array(LINE_COUNT * 2 * 3);
     for (let i = 0; i < LINE_COUNT; i++) {
@@ -123,7 +116,7 @@ export default function AnimatedBackground() {
       },
     });
     cameraTimeline.to(camera.position, { z: 2, y: -3 }, 0);
-    cameraTimeline.to(nodes.rotation, { y: Math.PI * 0.5 }, 0);
+    cameraTimeline.to(nodesGroup.rotation, { y: Math.PI * 0.5 }, 0);
 
     const ringsTimeline = gsap.timeline({
       scrollTrigger: {
@@ -163,8 +156,6 @@ export default function AnimatedBackground() {
       lineMaterial.dispose();
       ringGeometries.forEach((g) => g.dispose());
       ringMaterials.forEach((m) => m.dispose());
-      testGeo.dispose();
-      testMat.dispose();
       renderer.dispose();
     };
   }, []);
