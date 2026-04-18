@@ -52,8 +52,12 @@ const Router = typeof window !== "undefined" && window.location.protocol === "fi
 
 function ChatbotGuard() {
   const { pathname } = useLocation();
-  const isDashboard = pathname.startsWith("/dashboard");
-  if (isDashboard) return null;
+  const hidden =
+    pathname.startsWith("/dashboard") ||
+    pathname === "/login" ||
+    pathname === "/signup" ||
+    pathname === "/pricing";
+  if (hidden) return null;
   return <LiveChatbot />;
 }
 

@@ -1,20 +1,15 @@
 import { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Eye, EyeOff, Mail, Lock, User, Loader2, Sparkles, BarChart3, Mic, ArrowRight, Smartphone } from "lucide-react";
+import { Eye, EyeOff, Mail, Lock, User, Loader2, Sparkles, BarChart3, Mic, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  normalizePhoneToE164,
-  sendPhoneOtp,
-  signInWithApple,
   signInWithGoogle,
   signUp,
   validateEmail,
   validatePassword,
-  validatePhoneE164,
-  verifyPhoneOtp,
 } from "@/lib/auth";
 import { getPublicAppBaseUrl, hasConfiguredPublicAppUrl, isDesktopApp } from "@/lib/app-shell";
 import { toast } from "sonner";
@@ -48,12 +43,6 @@ export default function SignUpPage() {
   const [loading, setLoading] = useState(false);
   const [emailError, setEmailError] = useState("");
   const [passwordErrors, setPasswordErrors] = useState<string[]>([]);
-  const [phone, setPhone] = useState("");
-  const [phoneOtp, setPhoneOtp] = useState("");
-  const [phoneError, setPhoneError] = useState("");
-  const [phoneOtpSent, setPhoneOtpSent] = useState(false);
-  const [phoneSendLoading, setPhoneSendLoading] = useState(false);
-  const [phoneVerifyLoading, setPhoneVerifyLoading] = useState(false);
 
   const dots = useMemo(
     () =>
@@ -115,71 +104,6 @@ export default function SignUpPage() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Google sign-in could not be started right now.");
     }
-  };
-
-  const handleAppleSignIn = async () => {
-    try {
-      await signInWithApple();
-      if (desktopMode) {
-        toast("Continue with Apple in your browser. WrapUp will return here automatically when sign-in finishes.");
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Apple sign-in could not be started right now.");
-    }
-  };
-
-  const handleSendPhoneOtp = async () => {
-    setPhoneError("");
-    const normalizedPhone = normalizePhoneToE164(phone);
-
-    if (!validatePhoneE164(normalizedPhone)) {
-      setPhoneError("Use phone format like +8801XXXXXXXXX");
-      return;
-    }
-
-    setPhoneSendLoading(true);
-    const { error } = await sendPhoneOtp(
-      normalizedPhone,
-      fullName.trim() ? { full_name: fullName.trim() } : undefined,
-    );
-    setPhoneSendLoading(false);
-
-    if (error) {
-      setPhoneOtpSent(false);
-      toast.error(error.message);
-      return;
-    }
-
-    setPhone(normalizedPhone);
-    setPhoneOtpSent(true);
-    toast.success("OTP sent by SMS.");
-  };
-
-  const handleVerifyPhoneOtp = async () => {
-    setPhoneError("");
-    const normalizedPhone = normalizePhoneToE164(phone);
-
-    if (!validatePhoneE164(normalizedPhone)) {
-      setPhoneError("Use phone format like +8801XXXXXXXXX");
-      return;
-    }
-
-    if (!phoneOtp.trim()) {
-      setPhoneError("Enter the OTP code.");
-      return;
-    }
-
-    setPhoneVerifyLoading(true);
-    const { error } = await verifyPhoneOtp(normalizedPhone, phoneOtp.trim());
-    setPhoneVerifyLoading(false);
-
-    if (error) {
-      toast.error(error.message);
-      return;
-    }
-
-    toast.success("Phone verified. Account is ready.");
-    navigate("/dashboard");
   };
 
   return (
@@ -342,76 +266,6 @@ export default function SignUpPage() {
                   <svg className="h-4 w-4 mr-2" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" /><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
                   Sign in with Google
                 </Button>
-                <Button
-                  variant="outline"
-                  className="w-full bg-background/50 mt-2"
-                  onClick={() => void handleAppleSignIn()}
-                >
-                  <svg className="h-4 w-4 mr-2" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M16.365 1.43c0 1.14-.417 2.226-1.16 3.033-.788.86-2.077 1.52-3.237 1.427-.147-1.108.417-2.286 1.15-3.093.787-.87 2.147-1.49 3.247-1.367zM20.94 17.303c-.53 1.204-.777 1.74-1.46 2.787-.952 1.46-2.295 3.28-3.96 3.293-1.48.013-1.86-.953-3.87-.94-2.01.01-2.43.96-3.91.947-1.665-.013-2.938-1.654-3.89-3.113C1.185 16.04.91 11.12 2.57 8.565c1.18-1.82 3.05-2.89 4.81-2.89 1.794 0 2.92.953 4.4.953 1.437 0 2.313-.955 4.385-.955 1.565 0 3.22.854 4.397 2.32-3.87 2.12-3.24 7.665.378 9.31z" />
-                  </svg>
-                  Sign in with Apple
-                </Button>
-              </div>
-
-              <div className="mt-4 rounded-lg border border-border/60 bg-background/30 p-3 space-y-3">
-                <p className="text-xs text-muted-foreground">Or continue with phone (SMS OTP)</p>
-                <div className="relative">
-                  <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    type="tel"
-                    placeholder="+8801XXXXXXXXX"
-                    value={phone}
-                    onChange={(e) => {
-                      setPhone(e.target.value);
-                      setPhoneError("");
-                    }}
-                    className="pl-9 bg-background/50 border-border/50"
-                  />
-                </div>
-                {phoneError && <p className="text-xs text-destructive">{phoneError}</p>}
-                {phoneOtpSent ? (
-                  <div className="space-y-2">
-                    <Input
-                      inputMode="numeric"
-                      placeholder="Enter OTP"
-                      value={phoneOtp}
-                      onChange={(e) => setPhoneOtp(e.target.value)}
-                      className="bg-background/50 border-border/50"
-                    />
-                    <div className="flex gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="flex-1"
-                        disabled={phoneSendLoading}
-                        onClick={() => void handleSendPhoneOtp()}
-                      >
-                        {phoneSendLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                        Resend code
-                      </Button>
-                      <Button
-                        type="button"
-                        className="flex-1 gradient-bg text-primary-foreground"
-                        disabled={phoneVerifyLoading}
-                        onClick={() => void handleVerifyPhoneOtp()}
-                      >
-                        {phoneVerifyLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                        Verify code
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <Button
-                    type="button"
-                    className="w-full gradient-bg text-primary-foreground"
-                    disabled={phoneSendLoading}
-                    onClick={() => void handleSendPhoneOtp()}
-                  >
-                    {phoneSendLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                    Send code
-                  </Button>
-                )}
               </div>
 
               <p className="text-center text-sm text-muted-foreground mt-5">
