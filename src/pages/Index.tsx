@@ -1,8 +1,8 @@
 import { useEffect } from "react";
+import AnimatedBackground from "@/components/landing/AnimatedBackground";
 import LandingNavbar from "@/components/landing/LandingNavbar";
 import HeroScene from "@/components/landing/HeroScene";
 import StarfieldBackground from "@/components/landing/StarfieldBackground";
-import AnimatedBackground from "@/components/landing/AnimatedBackground";
 import TrustedBySection from "@/components/landing/TrustedBySection";
 import FeaturesSection from "@/components/landing/FeaturesSection";
 import HowItWorksSection from "@/components/landing/HowItWorksSection";
@@ -34,15 +34,9 @@ export default function LandingPage() {
   }, []);
 
   return (
-    <div
-      className="dark cinema-gradient text-foreground min-h-screen"
-      style={{ position: "relative" }}
-    >
+    <div className="dark bg-transparent text-foreground min-h-screen overflow-x-hidden relative">
       <AnimatedBackground />
-      <div
-        className="min-h-screen overflow-x-hidden relative"
-        style={{ zIndex: 1 }}
-      >
+      <div style={{ position: "relative", zIndex: 1 }}>
         <StarfieldBackground />
         <LandingNavbar />
         <HeroScene />

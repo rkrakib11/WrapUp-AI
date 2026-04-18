@@ -43,22 +43,78 @@ export default function AnimatedBackground() {
       nodePositions[i * 3 + 2] = (Math.random() - 0.5) * 10;
     }
 
+    const nodeSizes = new Float32Array(NODE_COUNT);
+    for (let i = 0; i < NODE_COUNT; i++) {
+      nodeSizes[i] = 3 + Math.random() * 5;
+    }
+
     const nodeGeometry = new THREE.BufferGeometry();
     nodeGeometry.setAttribute(
       "position",
       new THREE.BufferAttribute(nodePositions, 3),
     );
-    const nodeMaterial = new THREE.PointsMaterial({
-      color: 0x6366f1,
-      size: 0.05,
-      sizeAttenuation: true,
+    nodeGeometry.setAttribute(
+      "size",
+      new THREE.BufferAttribute(nodeSizes, 1),
+    );
+
+    const spriteCanvas = document.createElement("canvas");
+    spriteCanvas.width = 64;
+    spriteCanvas.height = 64;
+    const spriteCtx = spriteCanvas.getContext("2d")!;
+    const spriteGrad = spriteCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    spriteGrad.addColorStop(0, "rgba(255,255,255,1)");
+    spriteGrad.addColorStop(0.4, "rgba(255,255,255,0.8)");
+    spriteGrad.addColorStop(1, "rgba(255,255,255,0)");
+    spriteCtx.fillStyle = spriteGrad;
+    spriteCtx.fillRect(0, 0, 64, 64);
+    const nodeTexture = new THREE.CanvasTexture(spriteCanvas);
+
+    const nodeMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(0x818cf8) },
+        uTexture: { value: nodeTexture },
+        uPixelRatio: { value: renderer.getPixelRatio() },
+        uOpacity: { value: 0.9 },
+      },
+      vertexShader: `
+        attribute float size;
+        uniform float uPixelRatio;
+        void main() {
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mvPosition;
+          gl_PointSize = size * uPixelRatio;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform sampler2D uTexture;
+        uniform float uOpacity;
+        void main() {
+          float a = texture2D(uTexture, gl_PointCoord).a;
+          if (a < 0.02) discard;
+          gl_FragColor = vec4(uColor, a * uOpacity);
+        }
+      `,
       transparent: true,
-      opacity: 0.9,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
     });
     const nodes = new THREE.Points(nodeGeometry, nodeMaterial);
-    const nodesGroup = new THREE.Group();
-    nodesGroup.add(nodes);
-    scene.add(nodesGroup);
+
+    const nodeGroup = new THREE.Group();
+    nodeGroup.add(nodes);
+    scene.add(nodeGroup);
+
+    const sphereGeo = new THREE.SphereGeometry(1, 24, 24);
+    const sphereMat = new THREE.MeshBasicMaterial({
+      color: 0x6366f1,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.35,
+    });
+    const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
+    scene.add(sphereMesh);
 
     const linePositions = new Float32Array(LINE_COUNT * 2 * 3);
     for (let i = 0; i < LINE_COUNT; i++) {
@@ -116,7 +172,7 @@ export default function AnimatedBackground() {
       },
     });
     cameraTimeline.to(camera.position, { z: 2, y: -3 }, 0);
-    cameraTimeline.to(nodesGroup.rotation, { y: Math.PI * 0.5 }, 0);
+    cameraTimeline.to(nodeGroup.rotation, { y: Math.PI * 0.5 }, 0);
 
     const ringsTimeline = gsap.timeline({
       scrollTrigger: {
@@ -134,6 +190,8 @@ export default function AnimatedBackground() {
     const animate = () => {
       nodes.rotation.y += 0.0008;
       nodes.rotation.x = Math.sin(performance.now() * 0.0002) * 0.1;
+      sphereMesh.rotation.y += 0.0015;
+      sphereMesh.rotation.x += 0.0004;
       renderer.render(scene, camera);
       rafRef.current = requestAnimationFrame(animate);
     };
@@ -156,6 +214,9 @@ export default function AnimatedBackground() {
       lineMaterial.dispose();
       ringGeometries.forEach((g) => g.dispose());
       ringMaterials.forEach((m) => m.dispose());
+      sphereGeo.dispose();
+      sphereMat.dispose();
+      nodeTexture.dispose();
       renderer.dispose();
     };
   }, []);

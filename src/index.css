@@ -99,7 +99,8 @@
   }
 
   body {
-    @apply bg-background text-foreground font-sans antialiased;
+    @apply text-foreground font-sans antialiased;
+    background: hsl(228, 40%, 4%);
   }
 
   html {
