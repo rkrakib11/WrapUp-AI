@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Mail, Sparkles, Grid2x2, CreditCard, Users, HelpCircle, BookOpen, MessageSquare, UserCircle, Shield, FileText, Database, Accessibility } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import ExternalLink from "@/components/ExternalLink";
+import ExternalLink from "@/components/common/ExternalLink";
 
 const productLinks = [
   { label: "Features", href: "/features", icon: Sparkles },

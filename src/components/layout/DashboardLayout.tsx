@@ -5,7 +5,7 @@ import { useProfile } from "@/hooks/useProfile";
 import { useSubscription } from "@/hooks/useSubscription";
 import { signOut } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
-import { NavLink } from "@/components/NavLink";
+import { NavLink } from "@/components/common/NavLink";
 import {
   LayoutDashboard, Video, Upload, Radio, PhoneCall, BarChart3,
   Calendar, Settings, User, LogOut, Plus, Moon, Sun, Menu, Clock,

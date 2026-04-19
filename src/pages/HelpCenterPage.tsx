@@ -6,7 +6,7 @@ import LandingNavbar from "@/components/landing/LandingNavbar";
 import StarfieldBackground from "@/components/landing/StarfieldBackground";
 import Footer from "@/components/landing/Footer";
 import { Input } from "@/components/ui/input";
-import ExternalLink from "@/components/ExternalLink";
+import ExternalLink from "@/components/common/ExternalLink";
 import { isExternalHref } from "@/lib/app-shell";
 
 const faqCategories = [

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Mic, MicOff, Phone, PhoneOff, Users, Loader2, Monitor, MonitorOff } from "lucide-react";
-import { BackendRuntimeNotice } from "@/components/BackendRuntimeNotice";
+import { BackendRuntimeNotice } from "@/components/common/BackendRuntimeNotice";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useMeetings } from "@/hooks/useMeetings";

@@ -8,7 +8,7 @@ import Footer from "@/components/landing/Footer";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import ExternalLink from "@/components/ExternalLink";
+import ExternalLink from "@/components/common/ExternalLink";
 
 const contactCards = [
   {

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Upload, FileAudio, FileVideo, Loader2, Check, Info } from "lucide-react";
-import { BackendRuntimeNotice } from "@/components/BackendRuntimeNotice";
+import { BackendRuntimeNotice } from "@/components/common/BackendRuntimeNotice";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

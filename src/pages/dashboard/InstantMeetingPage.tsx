@@ -1,7 +1,7 @@
 import { AlertCircle, Loader2, Mic, Monitor, PhoneOff, Radio } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { BackendRuntimeNotice } from "@/components/BackendRuntimeNotice";
+import { BackendRuntimeNotice } from "@/components/common/BackendRuntimeNotice";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {

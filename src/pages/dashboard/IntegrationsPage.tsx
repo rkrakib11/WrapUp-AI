@@ -9,7 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMeetings } from "@/hooks/useMeetings";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useAuth } from "@/hooks/useAuth";
-import { usePalette } from "@/components/PaletteProvider";
+import { usePalette } from "@/components/providers/PaletteProvider";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { isTierAtLeast, type SubscriptionTier } from "@/lib/subscription";

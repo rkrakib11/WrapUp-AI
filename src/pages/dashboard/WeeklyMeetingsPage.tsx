@@ -5,7 +5,7 @@ import { ArrowLeft, Calendar, Clock, TrendingUp, Video } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line } from "recharts";
 import { useMeetings } from "@/hooks/useMeetings";
 import { useSubscription } from "@/hooks/useSubscription";
-import { usePalette } from "@/components/PaletteProvider";
+import { usePalette } from "@/components/providers/PaletteProvider";
 import { PremiumGate } from "@/components/dashboard/PremiumGate";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";

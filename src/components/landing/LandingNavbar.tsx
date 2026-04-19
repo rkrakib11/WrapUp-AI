@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Menu, X, Home, LayoutGrid, FileText, DollarSign, HelpCircle, ChevronDown, Mic, Brain, BarChart3, BookOpen, Newspaper, TrendingUp, Lightbulb, Users, GraduationCap, Zap, Calendar, MessageSquare, Shield, Clock, ArrowRight, Sun, Moon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { blogCategories, blogPosts } from "@/data/blogData";
-import { useTheme } from "@/components/ThemeProvider";
+import { useTheme } from "@/components/providers/ThemeProvider";
 
 const featuresDropdown = [
   { icon: Mic, label: "Live Recording", description: "Record meetings in real-time", href: "/features#live-recording" },

@@ -6,7 +6,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 import { useActionItems } from "@/hooks/useActionItems";
 import { useMeetings } from "@/hooks/useMeetings";
 import { useSubscription } from "@/hooks/useSubscription";
-import { usePalette } from "@/components/PaletteProvider";
+import { usePalette } from "@/components/providers/PaletteProvider";
 import { PremiumGate } from "@/components/dashboard/PremiumGate";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, FileText, ListTodo, BarChart3, Bot, StickyNote, Users, Download, Share2, Mail, Plus, Trash2, CheckCircle2, Circle, Pencil, ArrowRightCircle, Upload, Loader2, Info } from "lucide-react";
-import { BackendRuntimeNotice } from "@/components/BackendRuntimeNotice";
+import { BackendRuntimeNotice } from "@/components/common/BackendRuntimeNotice";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";

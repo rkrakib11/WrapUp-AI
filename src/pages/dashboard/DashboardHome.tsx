@@ -6,7 +6,7 @@ import { useSubscription } from "@/hooks/useSubscription";
 import { Link } from "react-router-dom";
 import OnboardingTour from "@/components/dashboard/OnboardingTour";
 import { PlanBadge, MeetingLimitBanner } from "@/components/dashboard/PremiumGate";
-import { usePalette } from "@/components/PaletteProvider";
+import { usePalette } from "@/components/providers/PaletteProvider";
 import { CSSProperties, useMemo } from "react";
 const fadeUp = {
   hidden: { opacity: 0, y: 20 },

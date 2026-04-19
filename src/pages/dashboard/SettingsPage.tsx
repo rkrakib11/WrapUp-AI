@@ -1,5 +1,5 @@
 import { Settings, Palette, RotateCcw } from "lucide-react";
-import { usePalette, presets, defaultPaletteColors, type CustomColors } from "@/components/PaletteProvider";
+import { usePalette, presets, defaultPaletteColors, type CustomColors } from "@/components/providers/PaletteProvider";
 import { useState } from "react";
 
 function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
