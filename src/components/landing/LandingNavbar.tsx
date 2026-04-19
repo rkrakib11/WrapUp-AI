@@ -312,7 +312,13 @@ function NavDropdown({ item }: { item: NavItem }) {
 
 export default function LandingNavbar() {
   const [open, setOpen] = useState(false);
+  const [expandedLabel, setExpandedLabel] = useState<string | null>(null);
   const { theme, toggleTheme } = useTheme();
+
+  const closeMobileMenu = () => {
+    setOpen(false);
+    setExpandedLabel(null);
+  };
 
   return (
     <motion.nav
@@ -365,24 +371,73 @@ export default function LandingNavbar() {
             className="md:hidden bg-background/95 backdrop-blur-xl border-b border-border/20 overflow-hidden"
           >
             <div className="p-5 flex flex-col gap-1">
-              {navLinks.map((l) => (
-                <a
-                  key={l.label}
-                  href={l.href}
-                  className="flex items-center gap-2 text-sm text-muted-foreground py-2.5 px-3 rounded-lg hover:bg-accent/50 hover:text-foreground active:bg-accent/60 transition-all duration-200"
-                  onClick={() => setOpen(false)}
-                >
-                  <l.icon size={15} className="opacity-60" />
-                  {l.label}
-                  {l.hasDropdown && <ChevronDown size={13} className="opacity-50 ml-auto" />}
-                </a>
-              ))}
+              {navLinks.map((l) => {
+                if (!l.hasDropdown || !l.dropdownItems) {
+                  return (
+                    <Link
+                      key={l.label}
+                      to={l.href}
+                      className="flex items-center gap-2 text-sm text-muted-foreground py-2.5 px-3 rounded-lg hover:bg-accent/50 hover:text-foreground active:bg-accent/60 transition-all duration-200"
+                      onClick={closeMobileMenu}
+                    >
+                      <l.icon size={15} className="opacity-60" />
+                      {l.label}
+                    </Link>
+                  );
+                }
+                const isExpanded = expandedLabel === l.label;
+                return (
+                  <div key={l.label} className="flex flex-col">
+                    <button
+                      type="button"
+                      className="flex items-center gap-2 text-sm text-muted-foreground py-2.5 px-3 rounded-lg hover:bg-accent/50 hover:text-foreground active:bg-accent/60 transition-all duration-200 w-full text-left"
+                      onClick={() => setExpandedLabel(isExpanded ? null : l.label)}
+                      aria-expanded={isExpanded}
+                    >
+                      <l.icon size={15} className="opacity-60" />
+                      {l.label}
+                      <ChevronDown
+                        size={13}
+                        className={`opacity-50 ml-auto transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+                      />
+                    </button>
+                    <AnimatePresence initial={false}>
+                      {isExpanded && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="ml-6 mt-1 mb-1 flex flex-col gap-0.5 border-l border-border/30 pl-3">
+                            {l.dropdownItems!.map((sub) => (
+                              <Link
+                                key={sub.label}
+                                to={sub.href}
+                                onClick={closeMobileMenu}
+                                className="flex items-start gap-2 text-sm text-muted-foreground py-2 px-2 rounded-md hover:bg-accent/40 hover:text-foreground active:bg-accent/60 transition-all duration-200"
+                              >
+                                <sub.icon size={14} className="mt-0.5 opacity-60 shrink-0" />
+                                <div className="flex flex-col">
+                                  <span className="text-sm">{sub.label}</span>
+                                  <span className="text-[11px] text-muted-foreground/70 leading-tight">{sub.description}</span>
+                                </div>
+                              </Link>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                );
+              })}
               <div className="flex items-center gap-2 pt-3">
                 <Button variant="outline" size="sm" asChild className="flex-1 rounded-full border-border/50 bg-transparent">
-                  <Link to="/login">Log in</Link>
+                  <Link to="/login" onClick={closeMobileMenu}>Log in</Link>
                 </Button>
                 <Button size="sm" className="gradient-bg text-primary-foreground flex-1 rounded-full" asChild>
-                  <Link to="/signup">Sign up</Link>
+                  <Link to="/signup" onClick={closeMobileMenu}>Sign up</Link>
                 </Button>
               </div>
             </div>
