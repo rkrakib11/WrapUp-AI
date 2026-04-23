@@ -169,6 +169,24 @@ class SupabaseClient:
     async def get_session_for_user(self, session_id: str, access_token: str) -> dict[str, Any] | None:
         return await self.fetch_one("sessions", filters={"id": session_id}, access_token=access_token)
 
+    async def get_meeting_for_user(self, meeting_id: str, access_token: str) -> dict[str, Any] | None:
+        return await self.fetch_one("meetings", filters={"id": meeting_id}, access_token=access_token)
+
+    async def list_sessions_for_meeting(self, meeting_id: str) -> list[dict[str, Any]]:
+        return await self.fetch_many(
+            "sessions",
+            filters={"meeting_id": meeting_id},
+            columns="id,audio_file_url",
+        )
+
+    async def delete_meeting(self, meeting_id: str) -> None:
+        response = await self._request(
+            "DELETE",
+            "/rest/v1/meetings",
+            params={"id": f"eq.{meeting_id}"},
+        )
+        response.raise_for_status()
+
     async def resolve_media_url(self, audio_file_url: str, expires_in: int = 3600) -> str:
         if audio_file_url.startswith("r2:"):
             raise ValueError("R2 audio refs must be resolved by R2StorageService, not SupabaseClient")

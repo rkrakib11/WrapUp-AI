@@ -26,6 +26,14 @@ class RagService:
         self.faiss_store = faiss_store
         self.groq_client = groq_client
 
+    def delete_session_index(self, session_id: str) -> bool:
+        """Delete the FAISS index + metadata for a session. Safe to call when absent."""
+        try:
+            return self.faiss_store.delete_session(session_id)
+        except Exception as exc:
+            logger.warning("faiss_delete_failed", session_id=session_id, error=str(exc))
+            return False
+
     def index_session_transcript(
         self,
         *,

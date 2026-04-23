@@ -77,7 +77,8 @@ class SessionProcessingService:
         if not session:
             raise ValueError("Session not found")
         session_language = self._resolve_language_code(session.get("language_detected"))
-        language_locked = bool(session.get("language_locked")) and session_language != "und"
+        user_selected_language = session_language != "und"
+        language_locked = user_selected_language or bool(session.get("language_locked"))
 
         meeting_id = session.get("meeting_id")
         audio_file_url = session.get("audio_file_url")
@@ -415,6 +416,19 @@ class SessionProcessingService:
             },
         )
 
+        # Migrate audio to B2/R2 as soon as the transcript is persisted. The
+        # audio file is no longer needed for downstream steps (summary, RAG,
+        # analytics), so doing it here prevents a summary failure from
+        # stranding the file in Supabase Storage forever.
+        migrated = False
+        if self.r2_storage and self.r2_storage.is_available() and not audio_file_url.startswith("r2:"):
+            await self._migrate_audio_to_r2(
+                session_id=session_id,
+                audio_file_url=audio_file_url,
+                extracted_audio_path=extracted_audio_path,
+            )
+            migrated = True
+
         await progress_callback(55, "Generating structured summary with Groq")
         try:
             summary = await self.summary_service.generate_summary(
@@ -471,14 +485,7 @@ class SessionProcessingService:
 
         await progress_callback(100, "Session processing completed")
 
-        # Migrate audio to B2/R2 then clean up extracted audio temp file.
-        if self.r2_storage and self.r2_storage.is_available() and not audio_file_url.startswith("r2:"):
-            await self._migrate_audio_to_r2(
-                session_id=session_id,
-                audio_file_url=audio_file_url,
-                extracted_audio_path=extracted_audio_path,
-            )
-        elif extracted_audio_path is not None:
+        if not migrated and extracted_audio_path is not None:
             self._safe_unlink(extracted_audio_path)
 
     async def _migrate_audio_to_r2(
@@ -494,6 +501,7 @@ class SessionProcessingService:
         of the original video, saving significant B2 storage space.
         """
         try:
+            import asyncio as _asyncio
             import mimetypes as _mimetypes
             if extracted_audio_path is not None and extracted_audio_path.exists():
                 # Video case: upload the small extracted audio, not the original video
@@ -506,7 +514,27 @@ class SessionProcessingService:
                 ext = audio_file_url.rsplit(".", 1)[-1].lower() if "." in audio_file_url else "mp3"
                 content_type = _mimetypes.guess_type(f"file.{ext}")[0] or "audio/mpeg"
             r2_key = f"audio/{session_id}.{ext}"
-            self.r2_storage.upload_bytes(r2_key, audio_bytes, content_type=content_type)
+
+            # Single retry on transient upload errors (network blip, throttling).
+            last_exc: Exception | None = None
+            for attempt in range(2):
+                try:
+                    self.r2_storage.upload_bytes(r2_key, audio_bytes, content_type=content_type)
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "r2_upload_retry",
+                        session_id=session_id,
+                        attempt=attempt + 1,
+                        error=str(exc),
+                    )
+                    if attempt == 0:
+                        await _asyncio.sleep(1.0)
+            if last_exc is not None:
+                raise last_exc
+
             await self.db.update_session(session_id, {"audio_file_url": f"r2:{r2_key}"})
             await self.db.delete_storage_object(audio_file_url)
             logger.info("audio_migrated_to_r2", session_id=session_id, r2_key=r2_key, size_mb=round(len(audio_bytes) / 1_048_576, 1))

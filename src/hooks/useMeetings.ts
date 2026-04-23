@@ -2,7 +2,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
+import { getBackendCandidates } from "@/lib/session-processing";
 import { useAuth } from "./useAuth";
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8002";
 
 type MeetingUpdate = Pick<
   Database["public"]["Tables"]["meetings"]["Update"],
@@ -78,8 +81,22 @@ export function useMeetings() {
 
   const deleteMeeting = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from("meetings").delete().eq("id", id);
-      if (error) throw error;
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token ?? "";
+      let lastError = "Failed to delete meeting";
+      for (const candidate of getBackendCandidates(BACKEND_URL)) {
+        try {
+          const res = await fetch(`${candidate}/meetings/${id}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) return;
+          lastError = (await res.text()) || `Backend responded with ${res.status}`;
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err);
+        }
+      }
+      throw new Error(lastError);
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["meetings"] }),
   });
