@@ -84,6 +84,7 @@ export function useMeetings() {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token ?? "";
       let lastError = "Failed to delete meeting";
+      let allCandidatesReturned404 = true;
       for (const candidate of getBackendCandidates(BACKEND_URL)) {
         try {
           const res = await fetch(`${candidate}/meetings/${id}`, {
@@ -91,10 +92,24 @@ export function useMeetings() {
             headers: { Authorization: `Bearer ${token}` },
           });
           if (res.ok) return;
+          if (res.status !== 404) allCandidatesReturned404 = false;
           lastError = (await res.text()) || `Backend responded with ${res.status}`;
         } catch (err) {
+          allCandidatesReturned404 = false;
           lastError = err instanceof Error ? err.message : String(err);
         }
+      }
+      // Desktop may be running an older bundled backend that does not yet
+      // expose DELETE /meetings/{id}. In that case every candidate returns
+      // 404. Fall back to a soft-delete so the UI stays responsive; the
+      // next rebuild will reclaim the orphaned storage.
+      if (allCandidatesReturned404) {
+        const { error } = await supabase
+          .from("meetings")
+          .update({ is_deleted: true })
+          .eq("id", id);
+        if (error) throw new Error(error.message);
+        return;
       }
       throw new Error(lastError);
     },

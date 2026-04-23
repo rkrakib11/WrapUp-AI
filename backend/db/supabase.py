@@ -221,9 +221,63 @@ class SupabaseClient:
                 "DELETE",
                 f"/storage/v1/object/{bucket}/{encoded_path}",
             )
-            logger.info("supabase_storage_deleted", bucket=bucket, path=path, status=response.status_code)
+            if response.is_success:
+                logger.info("supabase_storage_deleted", bucket=bucket, path=path, status=response.status_code)
+            else:
+                body = ""
+                try:
+                    body = response.text[:200]
+                except Exception:
+                    pass
+                logger.warning(
+                    "supabase_storage_delete_nonok",
+                    bucket=bucket,
+                    path=path,
+                    status=response.status_code,
+                    body=body,
+                )
         except Exception as exc:
             logger.warning("supabase_storage_delete_failed", audio_file_url=audio_file_url, error=str(exc))
+
+    async def list_storage_objects(self, bucket: str, prefix: str, limit: int = 1000) -> list[str]:
+        """Return object names (relative to bucket) under a prefix. Recurses via repeated calls.
+
+        Supabase Storage's /list endpoint is non-recursive by default — it returns folders
+        as entries with no id. We recurse into anything that looks like a folder (id is None).
+        """
+        collected: list[str] = []
+        stack: list[str] = [prefix.rstrip("/")]
+        while stack:
+            current = stack.pop()
+            try:
+                response = await self._request(
+                    "POST",
+                    f"/storage/v1/object/list/{bucket}",
+                    json_body={"prefix": current, "limit": limit, "offset": 0},
+                )
+                if not response.is_success:
+                    logger.warning(
+                        "supabase_storage_list_failed",
+                        bucket=bucket,
+                        prefix=current,
+                        status=response.status_code,
+                    )
+                    continue
+                entries = response.json() or []
+            except Exception as exc:
+                logger.warning("supabase_storage_list_error", bucket=bucket, prefix=current, error=str(exc))
+                continue
+            for entry in entries:
+                name = entry.get("name")
+                if not name:
+                    continue
+                full = f"{current}/{name}" if current else name
+                if entry.get("id") is None:
+                    # Folder — recurse.
+                    stack.append(full)
+                else:
+                    collected.append(full)
+        return collected
 
     async def download_audio(self, audio_file_url: str) -> bytes:
         signed_url = await self.resolve_media_url(audio_file_url, expires_in=3600)

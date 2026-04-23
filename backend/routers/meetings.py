@@ -78,6 +78,34 @@ async def delete_meeting(
         if session_id:
             container.rag.delete_session_index(session_id)
 
+    # Sweep: any leftover files under meeting-files/{owner}/{meeting}/ — e.g.
+    # the original video for an uploaded meeting whose audio_file_url got
+    # replaced with an r2:// ref after extraction. Scoped to this user's
+    # folder so we never touch anyone else's storage.
+    owner_id = meeting.get("owner_id")
+    if owner_id:
+        prefix = f"{owner_id}/{meeting_id}"
+        try:
+            leftover = await container.db.list_storage_objects("meeting-files", prefix)
+        except Exception as exc:
+            logger.warning(
+                "meeting_delete_storage_list_failed",
+                meeting_id=meeting_id,
+                prefix=prefix,
+                error=str(exc),
+            )
+            leftover = []
+        for obj_path in leftover:
+            try:
+                await container.db.delete_storage_object(f"meeting-files/{obj_path}")
+            except Exception as exc:
+                logger.warning(
+                    "meeting_delete_leftover_failed",
+                    meeting_id=meeting_id,
+                    path=obj_path,
+                    error=str(exc),
+                )
+
     try:
         await container.db.delete_meeting(meeting_id)
     except Exception as exc:

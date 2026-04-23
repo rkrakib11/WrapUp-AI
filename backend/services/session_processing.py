@@ -254,7 +254,11 @@ class SessionProcessingService:
                         # Deepgram gave nothing — use Groq Whisper directly
                         transcription = whisper_result
                     else:
-                        transcription = self._pick_best_transcript(transcription, whisper_result)
+                        transcription = self._pick_best_transcript(
+                            transcription,
+                            whisper_result,
+                            locked_language=session_language if language_locked else None,
+                        )
                     logger.info(
                         "groq_whisper_fallback_complete",
                         session_id=session_id,
@@ -281,7 +285,11 @@ class SessionProcessingService:
                             if deepgram_empty:
                                 transcription = whisper_result
                             else:
-                                transcription = self._pick_best_transcript(transcription, whisper_result)
+                                transcription = self._pick_best_transcript(
+                                    transcription,
+                                    whisper_result,
+                                    locked_language=session_language if language_locked else None,
+                                )
                         except Exception as local_exc:
                             logger.warning(
                                 "local_whisper_fallback_also_failed",
@@ -428,6 +436,48 @@ class SessionProcessingService:
                 extracted_audio_path=extracted_audio_path,
             )
             migrated = True
+
+        # Thin-transcript guard: Groq Whisper on silence often hallucinates a
+        # few English filler words. Rather than feed that to the summary LLM
+        # and get fabricated action items, short-circuit with a friendly
+        # "no speech detected" placeholder.
+        transcript_stripped = (transcription.transcript_text or "").strip()
+        transcript_word_count = len(transcript_stripped.split())
+        if transcript_word_count < 5 or len(transcript_stripped) < 20:
+            logger.info(
+                "no_speech_detected",
+                session_id=session_id,
+                word_count=transcript_word_count,
+                char_count=len(transcript_stripped),
+            )
+            summary = {
+                "executive_summary": "No speech was detected in this recording.",
+                "key_points": [],
+                "action_items": [],
+                "decisions": [],
+                "follow_ups": [],
+                "speaker_breakdown": [],
+                "mom": {},
+                "language": detected_language,
+            }
+            await self.db.update_session(session_id, {"summary": summary})
+            await progress_callback(95, "Computing analytics")
+            analytics = self.analytics_engine.build_analytics(
+                transcript=transcription.transcript_text,
+                segments=transcription.segments,
+                session_language=session_context["language_detected"],
+            )
+            analytics["language_confidence"] = language_confidence
+            analytics["language_locked"] = True
+            analytics["transcript_dominant_language"] = dominant_language
+            analytics["transcript_dominant_share"] = dominant_share
+            analytics["transcript_segments"] = transcript_payload
+            analytics["no_speech_detected"] = True
+            await self.db.update_session(session_id, {"analytics_data": analytics})
+            await progress_callback(100, "Session processing completed (no speech detected)")
+            if not migrated and extracted_audio_path is not None:
+                self._safe_unlink(extracted_audio_path)
+            return
 
         await progress_callback(55, "Generating structured summary with Groq")
         try:
@@ -823,9 +873,17 @@ class SessionProcessingService:
         self,
         deepgram: TranscriptionResult,
         whisper: TranscriptionResult,
+        *,
+        locked_language: str | None = None,
     ) -> TranscriptionResult:
         """
         Choose the transcript with the higher overall quality score.
+
+        When `locked_language` is set (user pre-selected a language),
+        correctness in that language wins over length/confidence. Deepgram
+        can confidently mistranscribe Bengali as Hindi — a higher score
+        from a wrong-language candidate is still garbage to the downstream
+        summary LLM.
 
         Scoring:
         - text length (more words = better coverage)
@@ -845,8 +903,27 @@ class SessionProcessingService:
             text_len = len((r.transcript_text or "").split())
             return text_len * conf + whisper_bonus
 
+        def _matches_locked(r: TranscriptionResult, locked: str) -> bool:
+            text = (r.transcript_text or "").strip()
+            if len(text) < 10:
+                return False
+            consensus = detect_language_consensus(text)
+            return normalize_language_code(consensus.language) == locked
+
+        def _apply_diarization(winner: TranscriptionResult, other: TranscriptionResult) -> TranscriptionResult:
+            if winner is whisper and other.segments and len({s.speaker for s in other.segments}) > 1:
+                whisper.segments = other.segments
+            return winner
+
         dg_score = _score(deepgram)
         ws_score = _score(whisper, whisper_bonus=10.0)
+
+        locked = normalize_language_code(locked_language) if locked_language else None
+        dg_lang_match: bool | None = None
+        ws_lang_match: bool | None = None
+        if locked and locked != "und":
+            dg_lang_match = _matches_locked(deepgram, locked)
+            ws_lang_match = _matches_locked(whisper, locked)
 
         logger.info(
             "transcript_selection",
@@ -854,14 +931,24 @@ class SessionProcessingService:
             whisper_score=round(ws_score, 2),
             deepgram_words=len(deepgram.raw_words),
             whisper_words=len(whisper.raw_words),
+            locked_language=locked,
+            deepgram_lang_match=dg_lang_match,
+            whisper_lang_match=ws_lang_match,
         )
 
+        if locked and locked != "und":
+            if ws_lang_match and not dg_lang_match:
+                return _apply_diarization(whisper, deepgram)
+            if dg_lang_match and not ws_lang_match:
+                return _apply_diarization(deepgram, whisper)
+            if not dg_lang_match and not ws_lang_match:
+                logger.warning(
+                    "transcript_neither_matches_locked_language",
+                    locked_language=locked,
+                )
+
         if ws_score >= dg_score:
-            # Preserve Deepgram diarization segments if Whisper wins on text
-            # but Deepgram had proper speaker segments
-            if deepgram.segments and len({s.speaker for s in deepgram.segments}) > 1:
-                whisper.segments = deepgram.segments
-            return whisper
+            return _apply_diarization(whisper, deepgram)
         return deepgram
 
     @staticmethod
