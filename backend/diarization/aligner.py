@@ -6,6 +6,7 @@ from typing import Any
 from structlog import get_logger
 
 from backend.diarization.pyannote_client import DiarizationTurn
+from backend.language import count_words
 from backend.models.domain import TranscriptSegment
 
 logger = get_logger(__name__)
@@ -158,7 +159,7 @@ def align_words_with_diarization(
         merged = [
             s for s in merged
             if (s.end - s.start) >= min_segment_duration
-            or len(s.text.split()) >= 5
+            or count_words(s.text) >= 5
         ]
         if not merged:
             merged = raw_segments  # safety: keep something

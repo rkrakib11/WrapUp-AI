@@ -13,6 +13,37 @@ from backend.core.config import Settings
 logger = get_logger(__name__)
 
 
+# One-sentence priming strings passed to Whisper as `prompt`. Whisper uses the
+# prompt both as a glossary (spelling/style) and as a language anchor — giving
+# it target-language text dramatically reduces language drift on short clips
+# and on first-token decisions where it would otherwise default to English.
+WHISPER_LANGUAGE_PRIMERS: dict[str, str] = {
+    "bn": "এটি একটি বাংলা ভাষার কথোপকথন। বক্তারা বাংলায় কথা বলছেন।",
+    "hi": "यह हिंदी भाषा में एक बातचीत है। वक्ता हिंदी में बोल रहे हैं।",
+    "ar": "هذه محادثة باللغة العربية. المتحدثون يتكلمون بالعربية.",
+    "zh": "这是一段中文普通话对话。说话者在用中文交流。",
+    "ur": "یہ اردو زبان میں ایک گفتگو ہے۔ بولنے والے اردو میں بات کر رہے ہیں۔",
+    "fa": "این یک مکالمه به زبان فارسی است. گویندگان به فارسی صحبت می‌کنند.",
+    "fr": "C'est une conversation en français. Les locuteurs parlent français.",
+    "es": "Esta es una conversación en español. Los hablantes hablan español.",
+    "de": "Dies ist ein Gespräch auf Deutsch. Die Sprecher sprechen Deutsch.",
+    "ja": "これは日本語の会話です。話者は日本語で話しています。",
+    "ko": "이것은 한국어 대화입니다. 화자들이 한국어로 말하고 있습니다.",
+    "pt": "Esta é uma conversa em português. Os falantes estão falando português.",
+    "it": "Questa è una conversazione in italiano. I parlanti parlano italiano.",
+    "ru": "Это разговор на русском языке. Говорящие говорят по-русски.",
+    "tr": "Bu bir Türkçe konuşmadır. Konuşmacılar Türkçe konuşuyor.",
+    "id": "Ini adalah percakapan dalam bahasa Indonesia. Pembicara berbicara dalam bahasa Indonesia.",
+    "en": "This is an English language conversation.",
+}
+
+
+def whisper_primer_for(language: str | None) -> str | None:
+    if not language:
+        return None
+    return WHISPER_LANGUAGE_PRIMERS.get(language.lower().split("-")[0])
+
+
 class GroqClient:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -78,6 +109,7 @@ class GroqClient:
         *,
         language: str | None = None,
         model: str | None = None,
+        prompt: str | None = None,
     ) -> dict[str, Any]:
         """Transcribe a single audio file via Groq Whisper API.
 
@@ -99,6 +131,8 @@ class GroqClient:
         }
         if language:
             data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
 
         last_error: Exception | None = None
         for key_idx, api_key in enumerate(self.settings.groq_api_key_list):
@@ -137,6 +171,7 @@ class GroqClient:
         *,
         language: str | None = None,
         model: str | None = None,
+        prompt: str | None = None,
     ) -> list[dict[str, Any]]:
         """Transcribe multiple audio chunks in parallel via Groq Whisper API.
 
@@ -148,7 +183,7 @@ class GroqClient:
         async def _transcribe_one(path: Path) -> dict[str, Any]:
             async with semaphore:
                 return await self.transcribe_audio(
-                    path, language=language, model=model,
+                    path, language=language, model=model, prompt=prompt,
                 )
 
         tasks = [_transcribe_one(p) for p in chunk_paths]

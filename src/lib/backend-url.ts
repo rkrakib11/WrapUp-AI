@@ -27,3 +27,46 @@ export function getBackendCandidates(baseUrl: string = resolveBackendUrl()): str
   if (normalized.includes(":8003")) variants.add(normalized.replace(":8003", ":8002"));
   return Array.from(variants);
 }
+
+/**
+ * Build a WebSocket URL for backend streaming endpoints.
+ *
+ * Resolution order:
+ *   - Desktop/Electron          → ws://127.0.0.1:8002{path}
+ *   - Production (Vercel HTTPS) → VITE_PROD_BACKEND_WS_URL (Cloudflare Tunnel
+ *                                 hostname, e.g. wss://api.example.com). Falls
+ *                                 back to converting resolveBackendUrl() if the
+ *                                 env var is unset, but that fallback will hit
+ *                                 mixed-content rules — users should set the var.
+ *   - Local web dev             → swap http→ws on VITE_BACKEND_URL
+ */
+export function resolveWebSocketUrl(path: string): string {
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+
+  if (isDesktopApp()) {
+    return `ws://127.0.0.1:8002${suffix}`;
+  }
+
+  if (import.meta.env.PROD) {
+    const prodWs = import.meta.env.VITE_PROD_BACKEND_WS_URL as string | undefined;
+    if (prodWs && prodWs.trim().length > 0) {
+      return `${prodWs.replace(/\/+$/, "")}${suffix}`;
+    }
+    // Fallback: derive from the HTTP proxy base. The /api/backend rewrite is
+    // HTTP-only, so this will likely fail for wss — log a loud warning so
+    // infra forgets to set VITE_PROD_BACKEND_WS_URL are obvious at runtime.
+    console.warn(
+      "[backend-url] VITE_PROD_BACKEND_WS_URL not set; production WebSocket streaming will likely fail.",
+    );
+  }
+
+  const base = resolveBackendUrl();
+  // Handle the `/api/backend` relative-path case — there's no scheme to swap.
+  if (base.startsWith("/")) {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const wsOrigin = origin.replace(/^http/, "ws");
+    return `${wsOrigin}${base}${suffix}`;
+  }
+  const wsBase = base.replace(/^http/, "ws");
+  return `${wsBase}${suffix}`;
+}

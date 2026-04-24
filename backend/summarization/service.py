@@ -39,10 +39,14 @@ class SummaryService:
         last_error: Exception | None = None
 
         for attempt in range(max_attempts):
+            previous_wrong_language = (
+                language_mismatch_detail[0] if language_mismatch_detail else None
+            )
             messages = self._build_summary_messages(
                 session_language=locked_language,
                 transcript_for_prompt=transcript_for_prompt,
                 retry=(attempt > 0),
+                previous_wrong_language=previous_wrong_language,
             )
             for model in ordered_models:
                 try:
@@ -118,14 +122,23 @@ class SummaryService:
         session_language: str,
         transcript_for_prompt: str,
         retry: bool,
+        previous_wrong_language: str | None = None,
     ) -> list[dict[str, str]]:
         language_name = language_code_to_name(session_language)
-        retry_clause = (
-            f"CRITICAL: Your previous response contained language other than {language_name}. "
-            "You MUST regenerate the entire output in ONLY that language. No exceptions."
-            if retry
-            else ""
-        )
+        if retry:
+            wrong_name = (
+                language_code_to_name(previous_wrong_language)
+                if previous_wrong_language
+                else "another language"
+            )
+            retry_clause = (
+                f"CRITICAL: Your previous response was in {wrong_name}, "
+                f"not {language_name}. Regenerate the ENTIRE output in {language_name} "
+                f"only. Every string in the JSON — including action items, decisions, "
+                f"and MoM fields — must be written in {language_name}. No exceptions."
+            )
+        else:
+            retry_clause = ""
         prompt = (
             "Return strictly valid JSON. Build a meeting summary object with keys: "
             "executive_summary (string), key_points (array[string]), action_items "

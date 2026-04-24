@@ -34,7 +34,7 @@ import { useMeetings } from "@/hooks/useMeetings";
 import { useMeetingDetail } from "@/hooks/useMeetingDetail";
 import { useActionItems } from "@/hooks/useActionItems";
 import { runNextForegroundUpload } from "@/lib/upload-queue";
-import { startSessionProcessing } from "@/lib/session-processing";
+import { resolveWebSocketUrl } from "@/lib/backend-url";
 import { supabase } from "@/integrations/supabase/client";
 import { deleteFinalizedCaptureSpool } from "@/lib/finalized-capture-spools";
 import { LANGUAGES } from "@/lib/languages";
@@ -169,8 +169,17 @@ export default function InstantMeetingPage() {
   const [webRecording, setWebRecording] = useState(false);
   const [webStopping, setWebStopping] = useState(false);
   const [autoStarting, setAutoStarting] = useState(Boolean(routeState?.autoStart && routeState?.language));
-  const webRecorderRef = useRef<MediaRecorder | null>(null);
-  const webChunksRef = useRef<Blob[]>([]);
+
+  // Live streaming (WebSocket) refs & state for the browser recording path.
+  // Desktop capture (Electron) still uses the native spool → batch flow.
+  const liveWsRef = useRef<WebSocket | null>(null);
+  const liveAudioCtxRef = useRef<AudioContext | null>(null);
+  const liveProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const liveStreamRef = useRef<MediaStream | null>(null);
+  const liveDoneResolveRef = useRef<((transcript: string) => void) | null>(null);
+  const [liveFinals, setLiveFinals] = useState<string[]>([]);
+  const [liveInterim, setLiveInterim] = useState<string>("");
 
   const { user } = useAuth();
   const { createMeeting } = useMeetings();
@@ -226,11 +235,7 @@ export default function InstantMeetingPage() {
     return () => {
       unsubscribe();
       void stopDesktopCapture();
-      const rec = webRecorderRef.current;
-      if (rec && rec.state !== "inactive") {
-        rec.stop();
-        rec.stream?.getTracks().forEach((t) => t.stop());
-      }
+      teardownLiveStreaming();
     };
   }, []);
 
@@ -294,123 +299,194 @@ export default function InstantMeetingPage() {
     return "Start Capture";
   }, [backendOffline, captureMicrophone, captureSystemAudio, language]);
 
-  const startWebRecording = async () => {
+  const teardownLiveStreaming = () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      // Pin a codec when the browser supports it so the backend sees a
-      // consistent format across Chrome/Safari/Firefox. Fall back to
-      // default if the preferred codec is unavailable.
-      const preferredMimeTypes = [
-        "audio/webm;codecs=opus",
-        "audio/webm",
-        "audio/mp4",
-        "audio/ogg;codecs=opus",
-      ];
-      const selectedMime = preferredMimeTypes.find((type) =>
-        typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type),
-      );
-      const recorderOptions = selectedMime ? { mimeType: selectedMime } : undefined;
-      const recorder = new MediaRecorder(stream, recorderOptions);
-      console.info("[InstantMeeting] MediaRecorder mimeType:", recorder.mimeType);
-      webChunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) webChunksRef.current.push(e.data);
+      liveProcessorRef.current?.disconnect();
+    } catch { /* noop */ }
+    liveProcessorRef.current = null;
+    try {
+      liveSourceRef.current?.disconnect();
+    } catch { /* noop */ }
+    liveSourceRef.current = null;
+    const ctx = liveAudioCtxRef.current;
+    if (ctx && ctx.state !== "closed") {
+      try { void ctx.close(); } catch { /* noop */ }
+    }
+    liveAudioCtxRef.current = null;
+    liveStreamRef.current?.getTracks().forEach((t) => t.stop());
+    liveStreamRef.current = null;
+    const ws = liveWsRef.current;
+    if (ws && ws.readyState !== WebSocket.CLOSED) {
+      try { ws.close(); } catch { /* noop */ }
+    }
+    liveWsRef.current = null;
+  };
+
+  const startWebRecording = async () => {
+    if (!language) {
+      toast.error("Select the spoken language before recording.");
+      setAutoStarting(false);
+      return;
+    }
+    let stream: MediaStream | null = null;
+    let ctx: AudioContext | null = null;
+    let targetMeetingId: string | null = null;
+
+    try {
+      // 1) Pre-create the meeting + session so we have an ID to open the WS
+      //    against. Uses the same Supabase path the upload flow uses.
+      const { data: authData } = await supabase.auth.getSession();
+      const accessToken = authData.session?.access_token;
+      if (!accessToken) throw new Error("Authentication session missing.");
+
+      const targetMeeting = await createMeeting.mutateAsync({
+        title: meetingTitle.trim() || `Meeting — ${new Date().toLocaleString()}`,
+        source: "live",
+      });
+      targetMeetingId = targetMeeting.id;
+
+      const { data: createdSession, error: sessionError } = await supabase
+        .from("sessions")
+        .insert({ meeting_id: targetMeetingId, language_detected: language })
+        .select("id")
+        .single();
+      if (sessionError) throw sessionError;
+      const sessionId: string = createdSession.id;
+
+      // 2) Open the WebSocket BEFORE starting the mic — if the server is
+      //    unreachable we surface that error before touching the user's mic.
+      const wsUrl =
+        `${resolveWebSocketUrl(`/ws/live-transcription/${sessionId}`)}` +
+        `?lang=${encodeURIComponent(language)}` +
+        `&token=${encodeURIComponent(accessToken)}`;
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+      liveWsRef.current = ws;
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => reject(new Error("WebSocket connect timed out")), 10_000);
+        ws.onopen = () => { window.clearTimeout(timeout); resolve(); };
+        ws.onerror = () => { window.clearTimeout(timeout); reject(new Error("WebSocket failed to open")); };
+      });
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(typeof evt.data === "string" ? evt.data : "");
+          if (msg.type === "transcript") {
+            const text = (msg.text as string | undefined)?.trim() ?? "";
+            if (msg.is_final) {
+              if (text) setLiveFinals((prev) => [...prev, text]);
+              setLiveInterim("");
+            } else {
+              setLiveInterim(text);
+            }
+          } else if (msg.type === "warning") {
+            toast.warning(msg.message ?? "Live transcription degraded.");
+          } else if (msg.type === "error") {
+            toast.error(msg.message ?? "Live transcription error.");
+          } else if (msg.type === "done") {
+            liveDoneResolveRef.current?.(msg.transcript ?? "");
+            liveDoneResolveRef.current = null;
+          }
+        } catch {
+          /* ignore non-JSON frames */
+        }
       };
-      recorder.start(1000);
-      webRecorderRef.current = recorder;
+
+      // 3) Capture mic as 16 kHz mono PCM. AudioContext's sampleRate option
+      //    triggers automatic resampling — works on Chrome/Edge/Firefox;
+      //    Safari ignores the hint but we convert in the callback anyway.
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, sampleRate: 16_000, echoCancellation: true, noiseSuppression: true },
+        video: false,
+      });
+      liveStreamRef.current = stream;
+
+      const AudioCtx: typeof AudioContext =
+        (window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
+      ctx = new AudioCtx({ sampleRate: 16_000 });
+      liveAudioCtxRef.current = ctx;
+
+      const source = ctx.createMediaStreamSource(stream);
+      liveSourceRef.current = source;
+      // ScriptProcessorNode is deprecated but universally supported and works
+      // without needing a separate AudioWorklet module file. Buffer 4096 @
+      // 16 kHz = ~256 ms — matches the spec's "every ~250ms" requirement.
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      liveProcessorRef.current = processor;
+
+      processor.onaudioprocess = (ev) => {
+        const input = ev.inputBuffer.getChannelData(0);
+        const pcm = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+          const s = Math.max(-1, Math.min(1, input[i]));
+          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        if (liveWsRef.current?.readyState === WebSocket.OPEN) {
+          liveWsRef.current.send(pcm.buffer);
+        }
+      };
+      source.connect(processor);
+      // Destination connection is required for ScriptProcessorNode to run.
+      processor.connect(ctx.destination);
+
+      setLiveFinals([]);
+      setLiveInterim("");
+      setEndedMeetingId(targetMeetingId);
       setWebRecording(true);
       setHasEntered(true);
       setAutoStarting(false);
-      toast.success("Recording started.");
+      toast.success("Live transcription started.");
     } catch (err) {
-      console.error("startWebRecording failed:", err);
-      toast.error("Microphone unavailable or permission denied.");
+      console.error("startWebRecording (streaming) failed:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to start live recording.");
+      // Clean up anything partially set up.
+      teardownLiveStreaming();
       setAutoStarting(false);
     }
   };
 
   const stopWebRecording = async () => {
-    const recorder = webRecorderRef.current;
-    if (!recorder || recorder.state === "inactive") return;
-
-    setWebStopping(true);
-
-    await new Promise<void>((resolve) => {
-      recorder.onstop = () => resolve();
-      recorder.stop();
-      recorder.stream?.getTracks().forEach((t) => t.stop());
-    });
-
-    setWebRecording(false);
-
-    const blobMimeType = recorder.mimeType || "audio/webm";
-    const blob = new Blob(webChunksRef.current, { type: blobMimeType });
-    console.info(
-      "[InstantMeeting] recording stopped — mime:",
-      blobMimeType,
-      "size:",
-      blob.size,
-      "bytes",
-    );
-
-    if (blob.size < MIN_CAPTURE_UPLOAD_BYTES) {
-      toast.error("Recording too short or silent. Record a longer meeting.");
-      setWebStopping(false);
+    const ws = liveWsRef.current;
+    if (!ws) {
+      teardownLiveStreaming();
+      setWebRecording(false);
       return;
     }
 
+    setWebStopping(true);
     setStopping(true);
     try {
-      const targetMeeting = await createMeeting.mutateAsync({
-        title: meetingTitle.trim() || `Meeting — ${new Date().toLocaleString()}`,
-        source: "live",
-      });
-      const targetMeetingId = targetMeeting.id;
-
-      const ext = blobMimeType.includes("mp4")
-        ? "mp4"
-        : blobMimeType.includes("ogg")
-        ? "ogg"
-        : "webm";
-      const filePath = `${user?.id}/${targetMeetingId}/${Date.now()}-recording.${ext}`;
-      const { error: uploadError } = await supabase.storage
-        .from("meeting-files")
-        .upload(filePath, blob, { contentType: blobMimeType, upsert: false });
-      if (uploadError) throw uploadError;
-
-      const audioStorageRef = `meeting-files/${filePath}`;
-      const { data: createdSession, error: sessionError } = await supabase
-        .from("sessions")
-        .insert({ meeting_id: targetMeetingId, audio_file_url: audioStorageRef, language_detected: language })
-        .select("id")
-        .single();
-      if (sessionError) throw sessionError;
-
-      const { data: authData } = await supabase.auth.getSession();
-      const accessToken = authData.session?.access_token;
-      if (!accessToken) throw new Error("Authentication session missing.");
-
+      // Stop pushing audio first so the final Deepgram flush catches no
+      // stale frames, then ask the server to finalise.
       try {
-        await startSessionProcessing(createdSession.id, accessToken);
-      } catch (processingError) {
-        setEndedMeetingId(targetMeetingId);
-        const details = processingError instanceof Error
-          ? processingError.message
-          : String(processingError);
-        console.error("startSessionProcessing failed:", processingError);
-        toast.error(`Processing failed to start: ${details}`);
-        await queryClient.invalidateQueries({ queryKey: ["meetings"] });
-        return;
+        liveProcessorRef.current?.disconnect();
+      } catch { /* noop */ }
+
+      const donePromise = new Promise<string>((resolve) => {
+        liveDoneResolveRef.current = resolve;
+        window.setTimeout(() => {
+          if (liveDoneResolveRef.current) {
+            liveDoneResolveRef.current("");
+            liveDoneResolveRef.current = null;
+          }
+        }, 20_000);
+      });
+
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "stop" }));
       }
 
-      setEndedMeetingId(targetMeetingId);
+      await donePromise;
       await queryClient.invalidateQueries({ queryKey: ["meetings"] });
-      toast.success("Meeting uploaded. Processing started.");
+      toast.success("Recording finished. Processing summary & analytics.");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Upload failed.");
+      toast.error(err instanceof Error ? err.message : "Failed to finalize recording.");
     } finally {
-      setStopping(false);
+      teardownLiveStreaming();
+      setWebRecording(false);
       setWebStopping(false);
+      setStopping(false);
     }
   };
 
@@ -784,7 +860,14 @@ export default function InstantMeetingPage() {
 
             {/* Tab content */}
             <div className="flex-1 min-h-0 bg-[#141828] border border-white/[0.08] rounded-xl p-4 overflow-y-auto">
-              {activeTab === "transcript" && (
+              {activeTab === "transcript" && webRecording && (
+                <LiveTranscriptPanel
+                  finals={liveFinals}
+                  interim={liveInterim}
+                  language={language}
+                />
+              )}
+              {activeTab === "transcript" && !webRecording && (
                 <TranscriptTabContent
                   transcript={latestTranscript}
                   processingStatus={processingStatus}
@@ -1153,6 +1236,46 @@ function AISummaryCard({
         <h2 className="text-sm font-semibold">AI Summary</h2>
       </div>
       <div className="px-4 py-4 overflow-y-auto">{body}</div>
+    </div>
+  );
+}
+
+function LiveTranscriptPanel({
+  finals,
+  interim,
+  language,
+}: {
+  finals: string[];
+  interim: string;
+  language: string;
+}) {
+  return (
+    <div className="flex flex-col gap-3 text-sm">
+      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
+        <span>Live transcription</span>
+        {language && <span className="text-muted-foreground/70">• {language.toUpperCase()}</span>}
+      </div>
+      <div className="leading-relaxed text-foreground/90">
+        {finals.length === 0 && !interim && (
+          <span className="italic text-muted-foreground">
+            Listening… start speaking and the transcript will appear here in real time.
+          </span>
+        )}
+        {finals.map((segment, idx) => (
+          <span key={idx}>
+            {segment}
+            {idx < finals.length - 1 ? " " : ""}
+          </span>
+        ))}
+        {interim && (
+          <>
+            {finals.length > 0 ? " " : ""}
+            <span className="italic text-muted-foreground">{interim}</span>
+          </>
+        )}
+        <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60 align-middle" />
+      </div>
     </div>
   );
 }

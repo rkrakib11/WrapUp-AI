@@ -9,7 +9,14 @@ from structlog import get_logger
 
 from backend.core.config import get_settings
 from backend.core.logging import configure_logging
-from backend.routers import chat_router, meetings_router, sessions_router, share_router, stripe_router
+from backend.routers import (
+    chat_router,
+    live_transcription_router,
+    meetings_router,
+    sessions_router,
+    share_router,
+    stripe_router,
+)
 from backend.services.container import ServiceContainer
 
 logger = get_logger(__name__)
@@ -68,6 +75,7 @@ app.include_router(meetings_router)
 app.include_router(share_router)
 app.include_router(stripe_router)
 app.include_router(chat_router)
+app.include_router(live_transcription_router)
 
 
 @app.get("/healthz")

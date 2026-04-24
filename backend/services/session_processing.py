@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -17,12 +18,13 @@ from backend.language import (
     LanguageDecision,
     analyze_segment_languages,
     clean_transcript_segments,
+    count_words,
     detect_language_consensus,
     normalize_language_code,
 )
 from backend.models.domain import TranscriptSegment, TranscriptionResult
 from backend.rag.service import RagService
-from backend.services.groq_client import GroqClient
+from backend.services.groq_client import GroqClient, whisper_primer_for
 from backend.services.r2_storage import R2StorageService
 from backend.summarization.service import SummaryService
 from backend.transcription.audio_utils import (
@@ -36,6 +38,22 @@ from backend.transcription.deepgram_client import DeepgramTranscriptionService
 from backend.transcription.whisper_client import WhisperTranscriptionService
 
 logger = get_logger(__name__)
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _clean_transcript_text(text: str, language: str | None = None) -> str:
+    """Remove Whisper U+FFFD boundary chars and normalise whitespace.
+
+    Does NOT strip `?` — legitimate question marks occur in every language
+    the app supports, including Bengali/Hindi/Arabic.
+    """
+    if not text:
+        return text
+    cleaned = text.replace("�", "")
+    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
+    return cleaned
+
 
 EXTRA_MEDIA_MIME_TYPES: dict[str, str] = {
     ".m4a": "audio/mp4",
@@ -234,6 +252,16 @@ class SessionProcessingService:
         if not language_locked and dominant_language != "und" and dominant_share >= self._language_dominance_threshold():
             detected_language = dominant_language
 
+        # Strip Whisper token-boundary garbage (U+FFFD) from the transcript
+        # and every segment. Whisper occasionally emits replacement chars
+        # between multi-byte Bengali/Hindi/Arabic tokens; they leak into
+        # summaries and break downstream text metrics.
+        transcription.transcript_text = _clean_transcript_text(
+            transcription.transcript_text, detected_language,
+        )
+        for seg in transcription.segments:
+            seg.text = _clean_transcript_text(seg.text, detected_language)
+
         session_context = {
             "language_detected": detected_language,
             "language_confidence": language_confidence,
@@ -295,7 +323,9 @@ class SessionProcessingService:
         # and get fabricated action items, short-circuit with a friendly
         # "no speech detected" placeholder.
         transcript_stripped = (transcription.transcript_text or "").strip()
-        transcript_word_count = len(transcript_stripped.split())
+        transcript_word_count = count_words(
+            transcript_stripped, session_context["language_detected"],
+        )
         if transcript_word_count < 5 or len(transcript_stripped) < 20:
             logger.info(
                 "no_speech_detected",
@@ -412,44 +442,33 @@ class SessionProcessingService:
         skipped entirely (fast path for Bangla/Hindi/Arabic uploads).
         Raises only if Deepgram fails AND Groq Whisper is disabled.
         """
-        await progress_callback(30, "Transcribing with Deepgram")
         deepgram_language_hint = (
             session_language if session_language and session_language != "und" else None
         )
-        logger.info(
-            "deepgram_start",
-            session_id=session_id,
-            language_hint=deepgram_language_hint,
-            language_locked=language_locked,
-            media_source="extracted_audio" if extracted_audio_path is not None else "url",
+        locked_norm = normalize_language_code(session_language) if language_locked else None
+
+        # Smart routing: if the user explicitly picked a non-English target,
+        # skip Deepgram entirely. Deepgram nova-3 is English-first and for
+        # Bengali/Hindi/Arabic either returns empty text or — worse —
+        # confidently transcribes it as the wrong language. Going straight
+        # to Groq Whisper with a language hint + primer cuts 3-6 seconds
+        # off user wait time AND raises accuracy.
+        skip_deepgram_non_english = bool(
+            locked_norm and locked_norm not in ("", "en", "und")
         )
 
         deepgram_failed = False
+        deepgram_empty = False
         transcription: TranscriptionResult | None = None
-        try:
-            if extracted_audio_path is not None:
-                audio_bytes = extracted_audio_path.read_bytes()
-                transcription = await self.transcription_service.transcribe_audio(
-                    audio_bytes,
-                    mime_type="audio/ogg",
-                    diarize=not use_hybrid,
-                    language=deepgram_language_hint,
-                )
-            else:
-                transcription = await self.transcription_service.transcribe_url(
-                    media_url=deepgram_media_url,
-                    diarize=not use_hybrid,
-                    language=deepgram_language_hint,
-                )
-        except Exception as dg_exc:
-            logger.exception(
-                "deepgram_exhausted_falling_back",
-                session_id=session_id,
-                error=str(dg_exc),
-            )
-            deepgram_failed = True
 
-        if transcription is None:
+        if skip_deepgram_non_english:
+            logger.info(
+                "deepgram_skipped_non_english_target",
+                session_id=session_id,
+                locked_language=locked_norm,
+            )
+            await progress_callback(30, f"Transcribing ({locked_norm}) with Groq Whisper")
+            deepgram_failed = True
             deepgram_empty = True
             transcription = TranscriptionResult(
                 transcript_text="",
@@ -459,17 +478,58 @@ class SessionProcessingService:
                 raw_response={},
             )
         else:
-            deepgram_empty = not self._has_transcript_content(
-                transcription.transcript_text, transcription.segments,
-            )
+            await progress_callback(30, "Transcribing with Deepgram")
             logger.info(
-                "deepgram_result",
+                "deepgram_start",
                 session_id=session_id,
-                empty=deepgram_empty,
-                detected_language=transcription.language,
-                segment_count=len(transcription.segments),
-                transcript_chars=len(transcription.transcript_text or ""),
+                language_hint=deepgram_language_hint,
+                language_locked=language_locked,
+                media_source="extracted_audio" if extracted_audio_path is not None else "url",
             )
+            try:
+                if extracted_audio_path is not None:
+                    audio_bytes = extracted_audio_path.read_bytes()
+                    transcription = await self.transcription_service.transcribe_audio(
+                        audio_bytes,
+                        mime_type="audio/ogg",
+                        diarize=not use_hybrid,
+                        language=deepgram_language_hint,
+                    )
+                else:
+                    transcription = await self.transcription_service.transcribe_url(
+                        media_url=deepgram_media_url,
+                        diarize=not use_hybrid,
+                        language=deepgram_language_hint,
+                    )
+            except Exception as dg_exc:
+                logger.exception(
+                    "deepgram_exhausted_falling_back",
+                    session_id=session_id,
+                    error=str(dg_exc),
+                )
+                deepgram_failed = True
+
+            if transcription is None:
+                deepgram_empty = True
+                transcription = TranscriptionResult(
+                    transcript_text="",
+                    language=deepgram_language_hint or "und",
+                    language_confidence=None,
+                    segments=[],
+                    raw_response={},
+                )
+            else:
+                deepgram_empty = not self._has_transcript_content(
+                    transcription.transcript_text, transcription.segments,
+                )
+                logger.info(
+                    "deepgram_result",
+                    session_id=session_id,
+                    empty=deepgram_empty,
+                    detected_language=transcription.language,
+                    segment_count=len(transcription.segments),
+                    transcript_chars=len(transcription.transcript_text or ""),
+                )
 
         # Hard-fail early if both providers unavailable (config issue, not transient).
         # Groq Whisper (cloud) is independent of `whisper_fallback_enabled`, which
@@ -638,6 +698,7 @@ class SessionProcessingService:
         diagnostics: dict[str, Any] = {
             "deepgram_failed": deepgram_failed,
             "deepgram_empty": deepgram_empty,
+            "skipped_deepgram_non_english": skip_deepgram_non_english,
             "detected_language": transcription.language,
             "groq_enabled": groq_whisper_enabled,
             "groq_client_present": self.groq_client is not None,
@@ -861,9 +922,18 @@ class SessionProcessingService:
                 num_chunks=len(chunk_paths),
             )
 
-            # Transcribe all chunks in parallel
+            # Transcribe all chunks in parallel. Pass an initial_prompt when
+            # we know the target language — it halves language-drift failures
+            # on short, accented, or quiet clips.
+            prompt = whisper_primer_for(language)
+            if prompt:
+                logger.info(
+                    "groq_whisper_prompt_applied",
+                    language=language,
+                    prompt_len=len(prompt),
+                )
             chunk_results = await self.groq_client.transcribe_audio_chunked(
-                chunk_paths, language=language, model=model,
+                chunk_paths, language=language, model=model, prompt=prompt,
             )
 
             # Merge results
@@ -1021,7 +1091,7 @@ class SessionProcessingService:
                 ) / len(words)
             else:
                 conf = float(r.language_confidence or 0.8)
-            text_len = len((r.transcript_text or "").split())
+            text_len = count_words(r.transcript_text or "", r.language)
             return text_len * conf + whisper_bonus
 
         def _matches_locked(r: TranscriptionResult, locked: str) -> bool:
