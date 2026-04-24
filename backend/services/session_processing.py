@@ -840,21 +840,13 @@ class SessionProcessingService:
                 audio_path = extracted_audio_path
             else:
                 downloaded = await self._download_media(media_url, audio_file_url)
-                # Groq /audio/transcriptions accepts these formats natively —
-                # skip the ffmpeg transcode so the common path works even when
-                # ffmpeg is unavailable (and saves 1–3s of latency otherwise).
-                groq_native_suffixes = {
-                    ".opus", ".mp3", ".m4a", ".ogg", ".oga",
-                    ".wav", ".flac", ".webm",
-                }
-                if downloaded.suffix.lower() in groq_native_suffixes:
-                    audio_path = downloaded
-                    needs_cleanup = True
-                else:
-                    audio_path = await convert_to_wav_16k(downloaded)
-                    needs_cleanup = True
-                    if audio_path != downloaded:
-                        self._safe_unlink(downloaded)
+                # Always transcode to 16 kHz mono 16-bit PCM WAV — Whisper's
+                # training distribution. Identical bytes on every surface
+                # (local + Oracle) means identical transcripts.
+                audio_path = await convert_to_wav_16k(downloaded)
+                needs_cleanup = True
+                if audio_path != downloaded:
+                    self._safe_unlink(downloaded)
 
             # Chunk if file is too large for single Groq request
             chunk_paths = await chunk_audio(
