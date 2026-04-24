@@ -111,11 +111,14 @@ export default function UploadPage() {
 
       try {
         await startSessionProcessing(createdSession.id, accessToken);
-      } catch {
+      } catch (processingError) {
         setUploaded(true);
-        toast.warning(
-          "File uploaded, but processing could not start. Backend may be offline. Open meeting details and click Retry Processing.",
-        );
+        const details = processingError instanceof Error
+          ? processingError.message
+          : String(processingError);
+        // Log full error so the user can copy/paste it from DevTools.
+        console.error("startSessionProcessing failed:", processingError);
+        toast.error(`Processing failed to start: ${details}`);
         return;
       }
 

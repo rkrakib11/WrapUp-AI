@@ -297,7 +297,21 @@ export default function InstantMeetingPage() {
   const startWebRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      const recorder = new MediaRecorder(stream);
+      // Pin a codec when the browser supports it so the backend sees a
+      // consistent format across Chrome/Safari/Firefox. Fall back to
+      // default if the preferred codec is unavailable.
+      const preferredMimeTypes = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+        "audio/ogg;codecs=opus",
+      ];
+      const selectedMime = preferredMimeTypes.find((type) =>
+        typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type),
+      );
+      const recorderOptions = selectedMime ? { mimeType: selectedMime } : undefined;
+      const recorder = new MediaRecorder(stream, recorderOptions);
+      console.info("[InstantMeeting] MediaRecorder mimeType:", recorder.mimeType);
       webChunksRef.current = [];
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) webChunksRef.current.push(e.data);
@@ -308,7 +322,8 @@ export default function InstantMeetingPage() {
       setHasEntered(true);
       setAutoStarting(false);
       toast.success("Recording started.");
-    } catch {
+    } catch (err) {
+      console.error("startWebRecording failed:", err);
       toast.error("Microphone unavailable or permission denied.");
       setAutoStarting(false);
     }
@@ -328,7 +343,15 @@ export default function InstantMeetingPage() {
 
     setWebRecording(false);
 
-    const blob = new Blob(webChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+    const blobMimeType = recorder.mimeType || "audio/webm";
+    const blob = new Blob(webChunksRef.current, { type: blobMimeType });
+    console.info(
+      "[InstantMeeting] recording stopped — mime:",
+      blobMimeType,
+      "size:",
+      blob.size,
+      "bytes",
+    );
 
     if (blob.size < MIN_CAPTURE_UPLOAD_BYTES) {
       toast.error("Recording too short or silent. Record a longer meeting.");
@@ -344,11 +367,15 @@ export default function InstantMeetingPage() {
       });
       const targetMeetingId = targetMeeting.id;
 
-      const ext = recorder.mimeType?.includes("mp4") ? "mp4" : "webm";
+      const ext = blobMimeType.includes("mp4")
+        ? "mp4"
+        : blobMimeType.includes("ogg")
+        ? "ogg"
+        : "webm";
       const filePath = `${user?.id}/${targetMeetingId}/${Date.now()}-recording.${ext}`;
       const { error: uploadError } = await supabase.storage
         .from("meeting-files")
-        .upload(filePath, blob);
+        .upload(filePath, blob, { contentType: blobMimeType, upsert: false });
       if (uploadError) throw uploadError;
 
       const audioStorageRef = `meeting-files/${filePath}`;
@@ -365,9 +392,13 @@ export default function InstantMeetingPage() {
 
       try {
         await startSessionProcessing(createdSession.id, accessToken);
-      } catch {
+      } catch (processingError) {
         setEndedMeetingId(targetMeetingId);
-        toast.warning("Recording uploaded, but processing could not start. You can retry from the meeting page.");
+        const details = processingError instanceof Error
+          ? processingError.message
+          : String(processingError);
+        console.error("startSessionProcessing failed:", processingError);
+        toast.error(`Processing failed to start: ${details}`);
         await queryClient.invalidateQueries({ queryKey: ["meetings"] });
         return;
       }

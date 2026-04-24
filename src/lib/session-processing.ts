@@ -1,4 +1,4 @@
-const DEFAULT_BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8002";
+import { getBackendCandidates, resolveBackendUrl } from "@/lib/backend-url";
 
 export function getProcessStartErrorMessage(error: unknown, fallback: string): string {
   if (typeof error === "object" && error !== null && "message" in error) {
@@ -20,20 +20,12 @@ export function getProcessStartErrorMessage(error: unknown, fallback: string): s
   return fallback;
 }
 
-export function getBackendCandidates(baseUrl: string): string[] {
-  const normalized = baseUrl.replace(/\/+$/, "");
-  const variants = new Set<string>([normalized]);
-  variants.add(normalized.replace("127.0.0.1", "localhost"));
-  variants.add(normalized.replace("localhost", "127.0.0.1"));
-  variants.add(normalized.replace(":8000", ":8002"));
-  variants.add(normalized.replace(":8002", ":8000"));
-  return Array.from(variants);
-}
+export { getBackendCandidates } from "@/lib/backend-url";
 
 export async function startSessionProcessing(
   sessionId: string,
   accessToken: string,
-  backendUrl = DEFAULT_BACKEND_URL,
+  backendUrl: string = resolveBackendUrl(),
 ): Promise<void> {
   let lastError = "Failed to start processing";
 

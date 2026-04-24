@@ -132,27 +132,18 @@ class SessionProcessingService:
         # Pass explicit language to Deepgram when user pre-selected one.
         # This avoids language confusion (e.g. Bengali detected as Hindi).
         deepgram_language_hint = session_language if session_language and session_language != "und" else None
-        if extracted_audio_path is not None:
-            # Deepgram can accept raw bytes — send extracted audio directly
-            audio_bytes = extracted_audio_path.read_bytes()
-            transcription = await self.transcription_service.transcribe_audio(
-                audio_bytes,
-                mime_type="audio/ogg",
-                diarize=not use_hybrid,
-                language=deepgram_language_hint,
-            )
-        else:
-            transcription = await self.transcription_service.transcribe_url(
-                media_url=deepgram_media_url,
-                diarize=not use_hybrid,
-                language=deepgram_language_hint,
-            )
-        deepgram_empty = not self._has_transcript_content(
-            transcription.transcript_text, transcription.segments,
+        logger.info(
+            "deepgram_start",
+            session_id=session_id,
+            language_hint=deepgram_language_hint,
+            media_source="extracted_audio" if extracted_audio_path is not None else "url",
         )
-        if deepgram_empty:
-            logger.warning("empty_transcription_retrying", session_id=session_id)
+
+        deepgram_failed = False
+        transcription: TranscriptionResult | None = None
+        try:
             if extracted_audio_path is not None:
+                # Deepgram can accept raw bytes — send extracted audio directly
                 audio_bytes = extracted_audio_path.read_bytes()
                 transcription = await self.transcription_service.transcribe_audio(
                     audio_bytes,
@@ -166,8 +157,76 @@ class SessionProcessingService:
                     diarize=not use_hybrid,
                     language=deepgram_language_hint,
                 )
+        except Exception as dg_exc:
+            # Deepgram exhausted all model/key fallbacks and raised.
+            # Do not kill the session — degrade to Groq Whisper fallback
+            # by treating this as an empty result.
+            logger.exception(
+                "deepgram_exhausted_falling_back",
+                session_id=session_id,
+                error=str(dg_exc),
+            )
+            deepgram_failed = True
+
+        if transcription is None:
+            deepgram_empty = True
+            transcription = TranscriptionResult(
+                transcript_text="",
+                language=deepgram_language_hint or "und",
+                language_confidence=None,
+                segments=[],
+                raw_response={},
+            )
+        else:
             deepgram_empty = not self._has_transcript_content(
                 transcription.transcript_text, transcription.segments,
+            )
+            logger.info(
+                "deepgram_result",
+                session_id=session_id,
+                empty=deepgram_empty,
+                detected_language=transcription.language,
+                segment_count=len(transcription.segments),
+            )
+
+        if deepgram_empty and not deepgram_failed:
+            logger.warning("empty_transcription_retrying", session_id=session_id)
+            try:
+                if extracted_audio_path is not None:
+                    audio_bytes = extracted_audio_path.read_bytes()
+                    transcription = await self.transcription_service.transcribe_audio(
+                        audio_bytes,
+                        mime_type="audio/ogg",
+                        diarize=not use_hybrid,
+                        language=deepgram_language_hint,
+                    )
+                else:
+                    transcription = await self.transcription_service.transcribe_url(
+                        media_url=deepgram_media_url,
+                        diarize=not use_hybrid,
+                        language=deepgram_language_hint,
+                    )
+                deepgram_empty = not self._has_transcript_content(
+                    transcription.transcript_text, transcription.segments,
+                )
+            except Exception as dg_exc:
+                logger.exception(
+                    "deepgram_retry_failed_falling_back",
+                    session_id=session_id,
+                    error=str(dg_exc),
+                )
+                deepgram_failed = True
+                deepgram_empty = True
+
+        # Loud failure: Deepgram died and Groq Whisper fallback is not
+        # configured — surface a clear error to the user rather than a
+        # generic "no text" message.
+        groq_disabled = self.groq_client is None or not self.db.settings.whisper_fallback_enabled
+        if deepgram_failed and groq_disabled:
+            raise RuntimeError(
+                "Transcription providers unavailable: Deepgram errored and Groq "
+                "Whisper fallback is disabled. Check GROQ_API_KEY and "
+                "WHISPER_FALLBACK_ENABLED on the server."
             )
 
         # ------------------------------------------------------------------

@@ -3,19 +3,11 @@ import { BotMessageSquare, X, Send, ChevronDown, Bot, User } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 
+import { getBackendCandidates, resolveBackendUrl } from "@/lib/backend-url";
+
 type Msg = { role: "user" | "assistant"; content: string };
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8002";
-
-function getBackendCandidates(baseUrl: string): string[] {
-  const normalized = baseUrl.replace(/\/+$/, "");
-  const variants = new Set<string>([normalized]);
-  variants.add(normalized.replace("127.0.0.1", "localhost"));
-  variants.add(normalized.replace("localhost", "127.0.0.1"));
-  variants.add(normalized.replace(":8000", ":8002"));
-  variants.add(normalized.replace(":8002", ":8000"));
-  return Array.from(variants);
-}
+const BACKEND_URL = resolveBackendUrl();
 
 export default function LiveChatbot() {
   const [open, setOpen] = useState(false);

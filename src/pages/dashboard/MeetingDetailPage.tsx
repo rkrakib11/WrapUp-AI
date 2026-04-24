@@ -47,7 +47,9 @@ type SummaryPayload = {
   language?: string;
 };
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8002";
+import { resolveBackendUrl, getBackendCandidates } from "@/lib/backend-url";
+
+const BACKEND_URL = resolveBackendUrl();
 const ACCEPTED_MEDIA_MIME = "audio/*,video/*";
 const COMMON_MEDIA_EXTENSIONS = new Set([
   "mp3", "wav", "mp4", "webm", "m4a", "aac", "flac", "ogg", "oga", "opus", "wma",
@@ -66,16 +68,6 @@ function getErrorMessage(error: unknown, fallback: string): string {
   }
   if (error instanceof Error && error.message) return error.message;
   return fallback;
-}
-
-function getBackendCandidates(baseUrl: string): string[] {
-  const normalized = baseUrl.replace(/\/+$/, "");
-  const variants = new Set<string>([normalized]);
-  variants.add(normalized.replace("127.0.0.1", "localhost"));
-  variants.add(normalized.replace("localhost", "127.0.0.1"));
-  variants.add(normalized.replace(":8000", ":8002"));
-  variants.add(normalized.replace(":8002", ":8000"));
-  return Array.from(variants);
 }
 
 function isAudioOrVideoFile(file: File): boolean {

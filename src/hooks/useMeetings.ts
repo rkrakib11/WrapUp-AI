@@ -3,9 +3,10 @@ import { useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
 import { getBackendCandidates } from "@/lib/session-processing";
+import { resolveBackendUrl } from "@/lib/backend-url";
 import { useAuth } from "./useAuth";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8002";
+const BACKEND_URL = resolveBackendUrl();
 
 type MeetingUpdate = Pick<
   Database["public"]["Tables"]["meetings"]["Update"],
