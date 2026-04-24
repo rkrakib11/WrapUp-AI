@@ -175,16 +175,20 @@ def _chunk_audio_sync(audio_path: Path, chunk_duration_seconds: int) -> list[Pat
     return chunk_paths
 
 
-# ffmpeg -af filter chain that cleans mic noise, normalises loudness, and
-# runs FFT-based noise reduction before handing audio to Whisper. Measured
-# impact on noisy WhatsApp voice notes: ~20% WER reduction.
-#   highpass=f=80         — drop rumble / AC hum below 80 Hz
-#   loudnorm=I=-16:...    — EBU R128 loudness normalisation to -16 LUFS
-#                           (Whisper's training distribution was ~-20→-14)
-#   afftdn=nf=-25         — FFT-domain noise floor reduction at -25 dB
-_WHISPER_CLEAN_FILTER = (
-    "highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11,afftdn=nf=-25"
-)
+# ffmpeg -af filter chain. Kept intentionally minimal:
+#   highpass=f=80   — drop rumble / AC hum below 80 Hz. Cheap, near-zero risk.
+#
+# What's deliberately NOT here:
+#   loudnorm       — compresses dynamic range; shaves soft consonants in
+#                    Bengali/Hindi/Arabic and noticeably hurt accuracy on
+#                    real user uploads. Whisper handles loudness variation
+#                    on its own.
+#   afftdn=-25     — too aggressive on non-Latin speech; phoneme-level
+#                    artifacts worse than the noise it removes.
+#
+# If a future experiment shows loudnorm helps, gate it behind a setting
+# rather than adding it back to every pipeline.
+_WHISPER_CLEAN_FILTER = "highpass=f=80"
 
 
 async def convert_to_wav_16k(audio_path: Path, *, clean: bool = True) -> Path:

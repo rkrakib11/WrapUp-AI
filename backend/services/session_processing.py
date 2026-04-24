@@ -562,9 +562,18 @@ class SessionProcessingService:
             # answer in the expected language.
             need_groq_whisper = False
             reason = ""
-            if deepgram_failed or deepgram_empty:
+            if skip_deepgram_non_english:
+                # We intentionally bypassed Deepgram because the user locked
+                # a non-English target. This is the *primary* path for that
+                # session, not a "fallback".
                 need_groq_whisper = True
-                reason = "Deepgram failed/empty"
+                reason = f"primary path for locked non-English ({locked_norm})"
+            elif deepgram_failed:
+                need_groq_whisper = True
+                reason = "Deepgram errored"
+            elif deepgram_empty:
+                need_groq_whisper = True
+                reason = "Deepgram returned empty"
             elif language_locked and locked_lang and locked_lang != "und" and locked_lang != dg_lang:
                 # User picked a language but Deepgram heard a different one —
                 # verify rather than trust a possibly-wrong transcript.
@@ -590,7 +599,12 @@ class SessionProcessingService:
 
             if need_groq_whisper:
                 groq_attempted = True
-                await progress_callback(38, f"Groq Whisper fallback ({reason})")
+                stage_label = (
+                    f"Transcribing with Groq Whisper ({reason})"
+                    if skip_deepgram_non_english
+                    else f"Groq Whisper fallback ({reason})"
+                )
+                await progress_callback(38, stage_label)
 
                 # Language hint for Groq:
                 # - user locked a language → use it
