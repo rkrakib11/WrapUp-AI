@@ -5,8 +5,20 @@ from pydantic import AnyHttpUrl, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Resolve .env relative to the project root, not the process CWD.
+# Systemd starts uvicorn with WorkingDirectory=/ by default, which means
+# a relative env_file=".env" silently resolves to /.env and finds nothing.
+# Anchor here to backend/core/config.py → backend/ → project root (parent.parent.parent).
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(_ENV_FILE) if _ENV_FILE.exists() else ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     app_name: str = "WrapUp AI Backend"
     app_env: str = "development"
