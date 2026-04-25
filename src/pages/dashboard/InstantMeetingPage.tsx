@@ -179,7 +179,7 @@ export default function InstantMeetingPage() {
   const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const liveStreamRef = useRef<MediaStream | null>(null);
   const liveDoneResolveRef = useRef<((transcript: string) => void) | null>(null);
-  const [liveFinals, setLiveFinals] = useState<string[]>([]);
+  const [liveFinals, setLiveFinals] = useState<{ speaker: number | null; text: string }[]>([]);
   const [liveInterim, setLiveInterim] = useState<string>("");
 
   const { user } = useAuth();
@@ -382,8 +382,7 @@ export default function InstantMeetingPage() {
             const speaker = typeof msg.speaker === "number" ? msg.speaker : null;
             if (msg.is_final) {
               if (text) {
-                const labelled = speaker !== null ? `Speaker ${speaker}: ${text}` : text;
-                setLiveFinals((prev) => [...prev, labelled]);
+                setLiveFinals((prev) => [...prev, { speaker, text }]);
               }
               setLiveInterim("");
             } else {
@@ -409,8 +408,18 @@ export default function InstantMeetingPage() {
       // 3) Capture mic as 16 kHz mono PCM. AudioContext's sampleRate option
       //    triggers automatic resampling — works on Chrome/Edge/Firefox;
       //    Safari ignores the hint but we convert in the callback anyway.
+      //    autoGainControl is intentionally OFF — when it's on, macOS keeps
+      //    silently dropping the system input level while you talk, which
+      //    visibly wrecks the meter in System Settings → Sound and starves
+      //    the encoder. echo/noise suppression stay on for clean speech.
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, sampleRate: 16_000, echoCancellation: true, noiseSuppression: true },
+        audio: {
+          channelCount: 1,
+          sampleRate: 16_000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false,
+        },
         video: false,
       });
       liveStreamRef.current = stream;
@@ -1109,7 +1118,7 @@ function LiveTranscriptPanel({
   interim,
   language,
 }: {
-  finals: string[];
+  finals: { speaker: number | null; text: string }[];
   interim: string;
   language: string;
 }) {
@@ -1120,25 +1129,37 @@ function LiveTranscriptPanel({
         <span>Live transcription</span>
         {language && <span className="text-muted-foreground/70">• {language.toUpperCase()}</span>}
       </div>
-      <div className="leading-relaxed text-foreground/90">
+      <div className="leading-relaxed text-foreground/90 space-y-2">
         {finals.length === 0 && !interim && (
-          <span className="italic text-muted-foreground">
+          <div className="italic text-muted-foreground">
             Listening… start speaking and the transcript will appear here in real time.
-          </span>
+          </div>
         )}
-        {finals.map((segment, idx) => (
-          <span key={idx}>
-            {segment}
-            {idx < finals.length - 1 ? " " : ""}
-          </span>
-        ))}
+        {finals.map((segment, idx) => {
+          // Speaker labels are 1-indexed in the UI even though Deepgram
+          // returns 0-indexed integers. "Speaker 1" reads more naturally.
+          const label =
+            segment.speaker !== null ? `Speaker ${segment.speaker + 1}` : null;
+          return (
+            <div key={idx} className="flex gap-2">
+              {label && (
+                <span className="shrink-0 font-semibold text-primary/80">
+                  {label}:
+                </span>
+              )}
+              <span>{segment.text}</span>
+            </div>
+          );
+        })}
         {interim && (
-          <>
-            {finals.length > 0 ? " " : ""}
-            <span className="italic text-muted-foreground">{interim}</span>
-          </>
+          <div className="italic text-muted-foreground">
+            {interim}
+            <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60 align-middle" />
+          </div>
         )}
-        <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60 align-middle" />
+        {!interim && finals.length > 0 && (
+          <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60 align-middle" />
+        )}
       </div>
     </div>
   );

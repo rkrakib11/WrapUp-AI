@@ -60,7 +60,20 @@ export function resolveWebSocketUrl(path: string): string {
   const suffix = path.startsWith("/") ? path : `/${path}`;
 
   if (isDesktopApp()) {
-    return `ws://127.0.0.1:8002${suffix}`;
+    // In packaged production Electron the bundled Python backend always
+    // listens on 127.0.0.1:8002 — hardcode it so a dev .env can't leak in.
+    if (import.meta.env.PROD) {
+      return `ws://127.0.0.1:8002${suffix}`;
+    }
+    // In dev Electron (`npm run dev:electron`) we honour VITE_BACKEND_URL
+    // so the renderer reaches the same uvicorn the web frontend uses
+    // (port 8003 by default), avoiding the race where the bundled
+    // Electron backend on 8002 hasn't finished spawning yet.
+    const envUrl = import.meta.env.VITE_BACKEND_URL as string | undefined;
+    const httpBase = envUrl && envUrl.trim().length > 0
+      ? envUrl.replace(/\/+$/, "")
+      : "http://127.0.0.1:8002";
+    return `${httpBase.replace(/^http/, "ws")}${suffix}`;
   }
 
   if (import.meta.env.PROD) {

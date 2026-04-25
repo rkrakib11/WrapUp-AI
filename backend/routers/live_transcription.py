@@ -270,9 +270,12 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
                 if is_final:
                     if text:
                         # Tag finalized transcript parts with their speaker so
-                        # post-stop persistence keeps speaker context.
+                        # post-stop persistence keeps speaker context. We
+                        # 1-index the displayed label (Deepgram is 0-indexed,
+                        # but humans count from 1) and put each utterance on
+                        # its own line so process_live_session can split them.
                         if speaker is not None:
-                            final_transcript_parts.append(f"Speaker {speaker}: {text}")
+                            final_transcript_parts.append(f"Speaker {speaker + 1}: {text}")
                         else:
                             final_transcript_parts.append(text)
                         consecutive_empty_finals = 0
@@ -367,7 +370,9 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
             with contextlib.suppress(Exception):
                 await dg_ws.close()
 
-    accumulated = " ".join(final_transcript_parts).strip()
+    # Newline-separate so each speaker turn is on its own line; the
+    # process_live_session() splitter relies on splitlines().
+    accumulated = "\n".join(final_transcript_parts).strip()
 
     # Fallback: Deepgram was degraded OR returned empty — re-transcribe the
     # spooled audio via Groq Whisper batch. Runs the same denoise + primer
