@@ -28,6 +28,10 @@ class ProcessingJob:
     message: str = "Queued"
     retries: int = 0
     error: str | None = None
+    # "upload" — full transcription chain (Deepgram/Groq/Whisper) + summary.
+    # "live"   — transcript already populated by the live WS endpoint, so
+    #            skip transcription, run summary + RAG + analytics only.
+    kind: str = "upload"
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 

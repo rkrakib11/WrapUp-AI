@@ -14,9 +14,16 @@ class SessionWorker:
         async def progress(progress: int, message: str) -> None:
             await progress_update(job, progress, message)
 
-        await self.processor.process_session(
-            session_id=job.session_id,
-            user_id=job.user_id,
-            progress_callback=progress,
-        )
+        if job.kind == "live":
+            await self.processor.process_live_session(
+                session_id=job.session_id,
+                user_id=job.user_id,
+                progress_callback=progress,
+            )
+        else:
+            await self.processor.process_session(
+                session_id=job.session_id,
+                user_id=job.user_id,
+                progress_callback=progress,
+            )
 

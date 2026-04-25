@@ -424,6 +424,135 @@ class SessionProcessingService:
         if not migrated and extracted_audio_path is not None:
             self._safe_unlink(extracted_audio_path)
 
+    async def process_live_session(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        progress_callback,
+    ) -> None:
+        """Post-processing for live (WebSocket-streamed) sessions.
+
+        The transcript is already persisted by the live WS endpoint, and
+        there's no `audio_file_url` to download. Skip the entire
+        transcription chain and jump straight to summary + RAG + analytics.
+
+        Mirrors the tail of `process_session` so action items, RAG index,
+        and analytics_data shape are identical for both upload and live
+        sessions.
+        """
+        session = await self.db.get_session(session_id)
+        if not session:
+            raise ValueError("Session not found")
+
+        transcript = (session.get("transcript") or "").strip()
+        if not transcript:
+            logger.warning(
+                "live_session_no_transcript",
+                session_id=session_id,
+            )
+            await progress_callback(100, "Live session ended with no transcript")
+            return
+
+        meeting_id = session.get("meeting_id")
+        detected_language = self._resolve_language_code(session.get("language_detected"))
+        if detected_language == "und":
+            # Re-derive from the transcript text if the WS endpoint stored
+            # nothing definitive.
+            consensus = detect_language_consensus(transcript)
+            detected_language = normalize_language_code(consensus.language) or "und"
+
+        # Build a TranscriptSegment list from speaker-labelled lines if the
+        # WS endpoint emitted "Speaker N: text" prefixes. Otherwise treat
+        # the whole transcript as a single Speaker-1 segment.
+        segments: list[TranscriptSegment] = []
+        for raw_line in transcript.splitlines() or [transcript]:
+            line = raw_line.strip()
+            if not line:
+                continue
+            speaker = "Speaker 1"
+            text_part = line
+            if line.lower().startswith("speaker ") and ":" in line:
+                head, _, rest = line.partition(":")
+                if head.strip():
+                    speaker = head.strip()
+                    text_part = rest.strip() or line
+            segments.append(
+                TranscriptSegment(
+                    speaker=speaker,
+                    text=text_part,
+                    start=0.0,
+                    end=0.0,
+                )
+            )
+        if not segments:
+            segments = [TranscriptSegment(speaker="Speaker 1", text=transcript, start=0.0, end=0.0)]
+
+        await progress_callback(40, "Generating structured summary")
+        try:
+            summary = await self.summary_service.generate_summary(
+                transcript=transcript,
+                session_language=detected_language,
+            )
+        except Exception as exc:
+            logger.exception("live_summary_failed", session_id=session_id, error=str(exc))
+            summary = {
+                "executive_summary": "Summary generation failed for this session.",
+                "key_points": [],
+                "action_items": [],
+                "decisions": [],
+                "follow_ups": [],
+                "speaker_breakdown": [],
+                "mom": {},
+                "language": detected_language,
+                "error": str(exc),
+            }
+        await self.db.update_session(session_id, {"summary": summary})
+
+        await progress_callback(70, "Persisting action items")
+        try:
+            await self._persist_action_items(
+                action_items=summary.get("action_items", []),
+                session_id=session_id,
+                meeting_id=meeting_id,
+                user_id=user_id,
+                language=detected_language,
+            )
+        except Exception as exc:
+            logger.warning("live_persist_action_items_failed", session_id=session_id, error=str(exc))
+
+        await progress_callback(85, "Building FAISS index for transcript retrieval")
+        try:
+            self.rag_service.index_session_transcript(
+                session_id=session_id,
+                transcript=transcript,
+                transcript_language=detected_language,
+            )
+        except Exception as exc:
+            logger.warning("live_rag_index_failed", session_id=session_id, error=str(exc))
+
+        await progress_callback(95, "Computing analytics")
+        analytics = self.analytics_engine.build_analytics(
+            transcript=transcript,
+            segments=segments,
+            session_language=detected_language,
+        )
+        analytics["language_locked"] = True
+        analytics["transcript_segments"] = [
+            {"speaker": s.speaker, "text": s.text, "start": s.start, "end": s.end}
+            for s in segments
+        ]
+        analytics["transcription_diagnostics"] = {"source": "live_websocket"}
+        await self.db.update_session(
+            session_id,
+            {
+                "analytics_data": analytics,
+                "language_detected": detected_language,
+                "language_locked": True,
+            },
+        )
+        await progress_callback(100, "Live session processing completed")
+
     async def _run_transcription_chain(
         self,
         *,

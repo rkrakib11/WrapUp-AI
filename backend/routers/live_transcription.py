@@ -44,6 +44,16 @@ _DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
 # when the client stops.
 _EMPTY_FINALS_THRESHOLD = 10
 
+# Deepgram streaming (nova-2 / nova-3) only accepts a subset of the
+# languages the batch API accepts. Sending anything outside this set
+# yields HTTP 400 from Deepgram on connect. For unsupported targets we
+# spool audio without opening Deepgram and rely on Groq Whisper batch
+# at stop. List based on Deepgram streaming support docs as of 2026-04.
+_DEEPGRAM_STREAMING_SUPPORTED = frozenset({
+    "en", "es", "fr", "de", "hi", "it", "pt", "nl", "ru", "ja",
+    "ko", "zh", "tr", "pl", "uk", "sv", "da", "no", "id", "cs",
+})
+
 
 async def _verify_user(token: str) -> UserContext | None:
     if not token:
@@ -80,6 +90,20 @@ def _deepgram_model_for_language(lang: str | None) -> str:
     return "nova-2"
 
 
+def _normalize_lang(lang: str | None) -> str | None:
+    if not lang:
+        return None
+    norm = lang.lower().split("-")[0]
+    return norm if norm and norm != "und" else None
+
+
+def _is_deepgram_streaming_supported(lang: str | None) -> bool:
+    norm = _normalize_lang(lang)
+    if norm is None:
+        return True  # unknown language → let Deepgram auto-detect
+    return norm in _DEEPGRAM_STREAMING_SUPPORTED
+
+
 def _build_deepgram_url(settings, lang: str | None) -> str:
     params = {
         "model": _deepgram_model_for_language(lang),
@@ -89,12 +113,14 @@ def _build_deepgram_url(settings, lang: str | None) -> str:
         "interim_results": "true",
         "punctuate": "true",
         "smart_format": "true",
-        "diarize": "false",
+        # Diarize on the streaming side so the client can show speaker
+        # labels in the live transcript. Deepgram returns speaker indices
+        # per word on channel.alternatives[0].words[].speaker.
+        "diarize": "true",
     }
-    if lang:
-        norm = lang.lower().split("-")[0]
-        if norm and norm != "und":
-            params["language"] = norm
+    norm = _normalize_lang(lang)
+    if norm:
+        params["language"] = norm
     return f"{_DEEPGRAM_WS_URL}?{urlencode(params)}"
 
 
@@ -153,32 +179,64 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
     deepgram_degraded = False
     stop_requested = False
 
-    try:
-        dg_ws = await websockets.connect(  # type: ignore[attr-defined]
-            deepgram_url,
-            additional_headers=deepgram_headers,
-            open_timeout=10,
-            ping_interval=5,
-            ping_timeout=20,
+    # Decide whether Deepgram streaming can handle this language. For
+    # unsupported languages (e.g. Bengali, Tamil, Urdu) we don't even try
+    # to open the Deepgram socket — connect would fail with HTTP 400.
+    # Instead we just spool audio and run Groq Whisper batch on stop.
+    use_deepgram = _is_deepgram_streaming_supported(lang)
+
+    dg_ws: Any = None
+    if use_deepgram:
+        try:
+            dg_ws = await websockets.connect(  # type: ignore[attr-defined]
+                deepgram_url,
+                additional_headers=deepgram_headers,
+                open_timeout=10,
+                ping_interval=5,
+                ping_timeout=20,
+            )
+        except TypeError:
+            # Older websockets versions use `extra_headers` instead of `additional_headers`.
+            dg_ws = await websockets.connect(  # type: ignore[attr-defined]
+                deepgram_url,
+                extra_headers=deepgram_headers,
+                open_timeout=10,
+                ping_interval=5,
+                ping_timeout=20,
+            )
+        except Exception as exc:
+            logger.warning("live_ws_deepgram_connect_failed", error=str(exc), session_id=session_id)
+            # Don't drop the client — degrade to spool-only and let Groq batch
+            # take over on stop. This is the correct UX when Deepgram is the
+            # one who's unhappy (rate limit, transient error, etc.).
+            use_deepgram = False
+            deepgram_degraded = True
+            with contextlib.suppress(Exception):
+                await websocket.send_json({
+                    "type": "warning",
+                    "message": (
+                        "Live transcript unavailable — recording will be transcribed when you stop."
+                    ),
+                })
+    else:
+        logger.info(
+            "live_ws_deepgram_skipped_unsupported_lang",
+            session_id=session_id,
+            lang=lang,
         )
-    except TypeError:
-        # Older websockets versions use `extra_headers` instead of `additional_headers`.
-        dg_ws = await websockets.connect(  # type: ignore[attr-defined]
-            deepgram_url,
-            extra_headers=deepgram_headers,
-            open_timeout=10,
-            ping_interval=5,
-            ping_timeout=20,
-        )
-    except Exception as exc:
-        logger.warning("live_ws_deepgram_connect_failed", error=str(exc), session_id=session_id)
-        await websocket.send_json({"type": "error", "message": f"Deepgram connect failed: {exc}"})
-        await websocket.close(code=4500)
-        spool_path.unlink(missing_ok=True)
-        return
+        with contextlib.suppress(Exception):
+            await websocket.send_json({
+                "type": "info",
+                "message": (
+                    "Live transcript isn't available for this language. "
+                    "Your recording will be transcribed when you stop."
+                ),
+            })
 
     async def pump_deepgram_to_client() -> None:
         nonlocal consecutive_empty_finals, deepgram_degraded
+        if dg_ws is None:
+            return
         try:
             async for message in dg_ws:
                 try:
@@ -195,9 +253,28 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
                 is_final = bool(event.get("is_final"))
                 confidence = float(alt.get("confidence") or 0.0)
 
+                # Pull dominant speaker index from word-level diarization.
+                # Deepgram returns per-word `speaker` integers; we pick the
+                # most-frequent speaker for this utterance.
+                speaker: int | None = None
+                words = alt.get("words") or []
+                if words:
+                    counts: dict[int, int] = {}
+                    for w in words:
+                        sp = w.get("speaker")
+                        if isinstance(sp, int):
+                            counts[sp] = counts.get(sp, 0) + 1
+                    if counts:
+                        speaker = max(counts.items(), key=lambda kv: kv[1])[0]
+
                 if is_final:
                     if text:
-                        final_transcript_parts.append(text)
+                        # Tag finalized transcript parts with their speaker so
+                        # post-stop persistence keeps speaker context.
+                        if speaker is not None:
+                            final_transcript_parts.append(f"Speaker {speaker}: {text}")
+                        else:
+                            final_transcript_parts.append(text)
                         consecutive_empty_finals = 0
                     else:
                         consecutive_empty_finals += 1
@@ -225,6 +302,7 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
                     await websocket.send_json({
                         "type": "transcript",
                         "text": text,
+                        "speaker": speaker,
                         "is_final": is_final,
                         "confidence": confidence,
                     })
@@ -233,7 +311,7 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
         except Exception as exc:
             logger.warning("live_ws_deepgram_pump_error", error=str(exc), session_id=session_id)
 
-    pump_task = asyncio.create_task(pump_deepgram_to_client())
+    pump_task = asyncio.create_task(pump_deepgram_to_client()) if dg_ws is not None else None
 
     # Spool writer runs in a thread pool to avoid blocking the event loop
     # on disk writes. Keep an open file handle for the session's lifetime.
@@ -252,14 +330,15 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
                 chunk: bytes = message["bytes"]
                 if chunk:
                     await loop.run_in_executor(None, _write_spool, chunk)
-                    try:
-                        await dg_ws.send(chunk)
-                    except Exception as exc:
-                        logger.warning(
-                            "live_ws_deepgram_send_error",
-                            error=str(exc),
-                            session_id=session_id,
-                        )
+                    if dg_ws is not None:
+                        try:
+                            await dg_ws.send(chunk)
+                        except Exception as exc:
+                            logger.warning(
+                                "live_ws_deepgram_send_error",
+                                error=str(exc),
+                                session_id=session_id,
+                            )
             elif "text" in message and message["text"]:
                 try:
                     control = json.loads(message["text"])
@@ -275,15 +354,18 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
     finally:
         with contextlib.suppress(Exception):
             spool_file.close()
-        # Tell Deepgram the stream is done so it emits any final results.
-        with contextlib.suppress(Exception):
-            await dg_ws.send(json.dumps({"type": "CloseStream"}))
+        if dg_ws is not None:
+            # Tell Deepgram the stream is done so it emits any final results.
+            with contextlib.suppress(Exception):
+                await dg_ws.send(json.dumps({"type": "CloseStream"}))
         # Give Deepgram ~2s to flush pending finals.
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(pump_task, timeout=2.0)
-        pump_task.cancel()
-        with contextlib.suppress(Exception):
-            await dg_ws.close()
+        if pump_task is not None:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(pump_task, timeout=2.0)
+            pump_task.cancel()
+        if dg_ws is not None:
+            with contextlib.suppress(Exception):
+                await dg_ws.close()
 
     accumulated = " ".join(final_transcript_parts).strip()
 
@@ -331,7 +413,9 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
             },
         )
         if accumulated:
-            await container.jobs.enqueue(session_id=session_id, user_id=user.id)
+            await container.jobs.enqueue(
+                session_id=session_id, user_id=user.id, kind="live",
+            )
     except Exception as exc:
         logger.exception("live_ws_persist_or_enqueue_failed", session_id=session_id, error=str(exc))
 

@@ -39,12 +39,24 @@ class JobQueue:
             await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers = []
 
-    async def enqueue(self, *, session_id: str, user_id: str) -> ProcessingJob:
+    async def enqueue(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        kind: str = "upload",
+    ) -> ProcessingJob:
         existing = self.jobs_by_session.get(session_id)
         if existing and existing.status in {JobState.queued, JobState.processing}:
             return existing
 
-        job = ProcessingJob(job_id=str(uuid4()), session_id=session_id, user_id=user_id, status=JobState.queued)
+        job = ProcessingJob(
+            job_id=str(uuid4()),
+            session_id=session_id,
+            user_id=user_id,
+            status=JobState.queued,
+            kind=kind,
+        )
         self.jobs_by_session[session_id] = job
         await self.db.append_processing_status(session_id, status=job.status.value, progress=0, message=job.message)
         await self._queue.put(session_id)

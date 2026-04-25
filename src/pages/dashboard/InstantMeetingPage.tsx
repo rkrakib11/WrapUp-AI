@@ -175,6 +175,7 @@ export default function InstantMeetingPage() {
   const liveWsRef = useRef<WebSocket | null>(null);
   const liveAudioCtxRef = useRef<AudioContext | null>(null);
   const liveProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const liveWorkletRef = useRef<AudioWorkletNode | null>(null);
   const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const liveStreamRef = useRef<MediaStream | null>(null);
   const liveDoneResolveRef = useRef<((transcript: string) => void) | null>(null);
@@ -305,6 +306,10 @@ export default function InstantMeetingPage() {
     } catch { /* noop */ }
     liveProcessorRef.current = null;
     try {
+      liveWorkletRef.current?.disconnect();
+    } catch { /* noop */ }
+    liveWorkletRef.current = null;
+    try {
       liveSourceRef.current?.disconnect();
     } catch { /* noop */ }
     liveSourceRef.current = null;
@@ -374,14 +379,22 @@ export default function InstantMeetingPage() {
           const msg = JSON.parse(typeof evt.data === "string" ? evt.data : "");
           if (msg.type === "transcript") {
             const text = (msg.text as string | undefined)?.trim() ?? "";
+            const speaker = typeof msg.speaker === "number" ? msg.speaker : null;
             if (msg.is_final) {
-              if (text) setLiveFinals((prev) => [...prev, text]);
+              if (text) {
+                const labelled = speaker !== null ? `Speaker ${speaker}: ${text}` : text;
+                setLiveFinals((prev) => [...prev, labelled]);
+              }
               setLiveInterim("");
             } else {
               setLiveInterim(text);
             }
           } else if (msg.type === "warning") {
             toast.warning(msg.message ?? "Live transcription degraded.");
+          } else if (msg.type === "info") {
+            // Server is telling us live transcript is unavailable for this
+            // language but the recording is still being captured.
+            toast(msg.message ?? "Live transcript unavailable.");
           } else if (msg.type === "error") {
             toast.error(msg.message ?? "Live transcription error.");
           } else if (msg.type === "done") {
@@ -409,26 +422,48 @@ export default function InstantMeetingPage() {
 
       const source = ctx.createMediaStreamSource(stream);
       liveSourceRef.current = source;
-      // ScriptProcessorNode is deprecated but universally supported and works
-      // without needing a separate AudioWorklet module file. Buffer 4096 @
-      // 16 kHz = ~256 ms — matches the spec's "every ~250ms" requirement.
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      liveProcessorRef.current = processor;
 
-      processor.onaudioprocess = (ev) => {
-        const input = ev.inputBuffer.getChannelData(0);
-        const pcm = new Int16Array(input.length);
-        for (let i = 0; i < input.length; i++) {
-          const s = Math.max(-1, Math.min(1, input[i]));
-          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-        }
+      // Prefer AudioWorklet (audio thread, immune to React re-render starvation
+      // → no dropped frames). Fall back to ScriptProcessorNode on browsers
+      // that don't expose audioWorklet (rare in 2026).
+      const sendPcmBuffer = (buf: ArrayBuffer) => {
         if (liveWsRef.current?.readyState === WebSocket.OPEN) {
-          liveWsRef.current.send(pcm.buffer);
+          liveWsRef.current.send(buf);
         }
       };
-      source.connect(processor);
-      // Destination connection is required for ScriptProcessorNode to run.
-      processor.connect(ctx.destination);
+
+      let usingWorklet = false;
+      try {
+        if (ctx.audioWorklet) {
+          await ctx.audioWorklet.addModule("/pcm-recorder-worklet.js");
+          const worklet = new AudioWorkletNode(ctx, "pcm-recorder");
+          worklet.port.onmessage = (ev: MessageEvent<ArrayBuffer>) => {
+            sendPcmBuffer(ev.data);
+          };
+          liveWorkletRef.current = worklet;
+          source.connect(worklet);
+          // No destination connection needed for AudioWorklet.
+          usingWorklet = true;
+        }
+      } catch (workletErr) {
+        console.warn("[live] AudioWorklet failed, falling back to ScriptProcessor:", workletErr);
+      }
+
+      if (!usingWorklet) {
+        const processor = ctx.createScriptProcessor(4096, 1, 1);
+        liveProcessorRef.current = processor;
+        processor.onaudioprocess = (ev) => {
+          const input = ev.inputBuffer.getChannelData(0);
+          const pcm = new Int16Array(input.length);
+          for (let i = 0; i < input.length; i++) {
+            const s = Math.max(-1, Math.min(1, input[i]));
+            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+          sendPcmBuffer(pcm.buffer);
+        };
+        source.connect(processor);
+        processor.connect(ctx.destination);
+      }
 
       setLiveFinals([]);
       setLiveInterim("");
@@ -498,27 +533,17 @@ export default function InstantMeetingPage() {
   // If we land here without autoStart + language, this page has nothing to
   // show — silently redirect back to New Meeting. Direct navigation to
   // /dashboard/instant is no longer a supported user surface.
+  //
+  // Both web and Electron now go through the WebSocket / getUserMedia path
+  // so live transcription works identically on both. The native
+  // desktop-capture spool flow is intentionally skipped — it's mic+system
+  // batch-only, doesn't drive live transcript. Re-add later as an opt-in.
   useEffect(() => {
     if (!routeState?.autoStart || !routeState?.language) {
       navigate("/dashboard/new-meeting", { replace: true });
       return;
     }
-    if (isDesktopCaptureAvailable()) {
-      startDesktopCapture({ captureMicrophone: true, captureSystemAudio: false, language: routeState.language })
-        .then(() => {
-          setIsMuted(false);
-          setDesktopCaptureMicMuted(false);
-          setAutoStarting(false);
-          toast.success("Recording started.");
-        })
-        .catch(() => {
-          toast.error("WebSocket failed to open");
-          setAutoStarting(false);
-          navigate("/dashboard/new-meeting", { replace: true });
-        });
-    } else {
-      void startWebRecording();
-    }
+    void startWebRecording();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleStartCapture = async () => {
