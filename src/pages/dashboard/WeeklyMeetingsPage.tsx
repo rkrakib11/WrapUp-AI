@@ -134,7 +134,7 @@ export default function WeeklyMeetingsPage() {
         </div>
         {displayMeetings.length === 0 ? (
           <div className="p-6 text-center text-muted-foreground text-sm">
-            No meetings recorded this week. <Link to="/dashboard/upload" className="text-primary hover:underline">Upload a recording</Link> or <Link to="/dashboard/instant" className="text-primary hover:underline">start an instant meeting</Link>.
+            No meetings recorded this week. <Link to="/dashboard/upload" className="text-primary hover:underline">Upload a recording</Link> or <Link to="/dashboard/new-meeting" className="text-primary hover:underline">start a new meeting</Link>.
           </div>
         ) : (
           <Table>

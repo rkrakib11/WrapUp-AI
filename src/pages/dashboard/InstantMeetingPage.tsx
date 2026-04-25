@@ -439,10 +439,14 @@ export default function InstantMeetingPage() {
       toast.success("Live transcription started.");
     } catch (err) {
       console.error("startWebRecording (streaming) failed:", err);
-      toast.error(err instanceof Error ? err.message : "Failed to start live recording.");
-      // Clean up anything partially set up.
+      // Single user-visible message regardless of which step failed; the
+      // detailed reason is in the console for debugging. We don't want a
+      // standalone "instant" page surface — bounce the user back to New
+      // Meeting with a toast and let them retry from there.
+      toast.error("WebSocket failed to open");
       teardownLiveStreaming();
       setAutoStarting(false);
+      navigate("/dashboard/new-meeting", { replace: true });
     }
   };
 
@@ -490,9 +494,15 @@ export default function InstantMeetingPage() {
     }
   };
 
-  // Auto-start when navigated from NewMeetingPage with autoStart flag
+  // Auto-start when navigated from NewMeetingPage with autoStart flag.
+  // If we land here without autoStart + language, this page has nothing to
+  // show — silently redirect back to New Meeting. Direct navigation to
+  // /dashboard/instant is no longer a supported user surface.
   useEffect(() => {
-    if (!routeState?.autoStart || !routeState?.language) return;
+    if (!routeState?.autoStart || !routeState?.language) {
+      navigate("/dashboard/new-meeting", { replace: true });
+      return;
+    }
     if (isDesktopCaptureAvailable()) {
       startDesktopCapture({ captureMicrophone: true, captureSystemAudio: false, language: routeState.language })
         .then(() => {
@@ -501,9 +511,10 @@ export default function InstantMeetingPage() {
           setAutoStarting(false);
           toast.success("Recording started.");
         })
-        .catch((err: unknown) => {
-          toast.error(err instanceof Error ? err.message : "Failed to start capture.");
+        .catch(() => {
+          toast.error("WebSocket failed to open");
           setAutoStarting(false);
+          navigate("/dashboard/new-meeting", { replace: true });
         });
     } else {
       void startWebRecording();
@@ -913,45 +924,10 @@ export default function InstantMeetingPage() {
     );
   }
 
-  // State 1 — WebSocket-unavailable notice.
-  // The setup form (mic toggle, system audio, language picker, Start Capture
-  // button) was removed: live recording on production HTTPS requires a wss://
-  // tunnel to Oracle which isn't configured yet. Once the Cloudflare Tunnel
-  // is set up and VITE_PROD_BACKEND_WS_URL is exported, the auto-start path
-  // from NewMeetingPage will succeed and route the user straight to the
-  // active recording view above (`if (inActiveView)`).
-  return (
-    <div className="space-y-6">
-      <div className="mx-auto w-full max-w-[560px]">
-        <div className="bg-[#141828] border border-white/[0.08] rounded-2xl p-8 flex flex-col items-center gap-5 text-center">
-          <div className="h-12 w-12 rounded-full bg-rose-500/15 border border-rose-500/30 flex items-center justify-center">
-            <MicOff className="h-6 w-6 text-rose-400" />
-          </div>
-          <div className="space-y-2">
-            <h1 className="text-[18px] font-semibold text-foreground">
-              WebSocket failed to open
-            </h1>
-            <p className="text-[13px] text-muted-foreground leading-relaxed">
-              Live recording isn&apos;t available on this surface yet. Please use
-              file upload from the New Meeting page, or open the desktop app
-              for live recording with system audio.
-            </p>
-          </div>
-          <div className="flex items-center gap-3 pt-2">
-            <Button variant="outline" onClick={() => navigate("/dashboard/new-meeting")}>
-              New Meeting
-            </Button>
-            <Button
-              className="gradient-bg text-primary-foreground"
-              onClick={() => navigate("/dashboard/upload")}
-            >
-              Upload a file
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  // No standalone surface for /dashboard/instant. If we're not in the
+  // active view and not auto-starting, the auto-start effect above already
+  // navigated us away — render nothing while React processes that.
+  return null;
 }
 
 interface ControlBtnProps {

@@ -36,7 +36,6 @@ const sidebarLinks = [
 const PAGE_TITLES: Array<{ match: (p: string) => boolean; title: string }> = [
   { match: (p) => p.startsWith("/dashboard/meetings"), title: "Meetings" },
   { match: (p) => p.startsWith("/dashboard/upload"), title: "Upload Recording" },
-  { match: (p) => p.startsWith("/dashboard/instant"), title: "Instant Meeting" },
   { match: (p) => p.startsWith("/dashboard/new-meeting"), title: "New Meeting" },
   { match: (p) => p.startsWith("/dashboard/schedule"), title: "Schedule" },
   { match: (p) => p.startsWith("/dashboard/upcoming"), title: "Upcoming Meetings" },

@@ -473,7 +473,7 @@ export default function MeetingsPage() {
         <MeetingsEmptyState
           searchActive={searchActive}
           onUpload={() => navigate("/dashboard/upload")}
-          onStart={() => navigate("/dashboard/instant")}
+          onStart={() => navigate("/dashboard/new-meeting")}
         />
       ) : view === "list" ? (
         <div className="glass rounded-xl divide-y divide-border/40 overflow-hidden">
