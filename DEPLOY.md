@@ -85,60 +85,101 @@ ssh ubuntu@92.4.79.17 "sudo journalctl -u wrapup.service -n 80 --no-pager"
 
 ---
 
-## Production WebSocket routing — Cloudflare Tunnel
+## Production WebSocket routing — Cloudflare Tunnel (REQUIRED for live recording on Vercel)
 
-Browsers on `https://wrap-up-ai-2.vercel.app` cannot open `ws://` (mixed content) and cannot reach Oracle's `http://92.4.79.17:8000` directly. The production WebSocket path must be `wss://`. We use a Cloudflare Tunnel to give Oracle a TLS hostname without managing certs on the VM.
+Browsers on `https://wrap-up-ai-2.vercel.app` cannot open `ws://` (mixed-content rule) and cannot reach Oracle's `http://92.4.79.17:8000` directly. The production WebSocket path must be `wss://`. We use a Cloudflare Tunnel to give Oracle a TLS hostname without managing certs on the VM.
 
-### One-time setup on Oracle
+**Until this is set up, live recording will fail in production with a clear toast:**
+"Live recording isn't available on production yet. Please upload a file below, or use the desktop app for live recording." (uploads + summaries continue to work fine.)
+
+### Prerequisites
+
+- A domain you own (any TLD), pointed to Cloudflare nameservers — free Cloudflare account is enough
+- ~15 minutes
+- Your Oracle SSH key at `~/Downloads/ssh-key-2026-04-22.key`
+
+### Step A — One-time setup on Oracle (run from your Mac)
 
 ```bash
-ssh ubuntu@92.4.79.17
+# Open a shell on Oracle (uses your existing key)
+ssh -i ~/Downloads/ssh-key-2026-04-22.key ubuntu@92.4.79.17
+
+# Once you're on Oracle, run the rest:
+
 # 1) install cloudflared
 curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-  -o /usr/local/bin/cloudflared
-sudo chmod +x /usr/local/bin/cloudflared
+  -o /tmp/cloudflared
+sudo install /tmp/cloudflared /usr/local/bin/cloudflared
 
-# 2) log in (opens a browser URL — complete auth once)
+# 2) log in. Prints a URL — open it in your browser, pick the domain, finish auth.
 cloudflared tunnel login
 
-# 3) create the tunnel
+# 3) create the tunnel (saves credentials in ~/.cloudflared/)
 cloudflared tunnel create wrapup-backend
 
-# 4) route a hostname to it (use a domain you own on Cloudflare)
+# 4) note the tunnel UUID printed above. Then route a hostname to it:
+#    Replace api.your-domain.example with whatever subdomain you want.
 cloudflared tunnel route dns wrapup-backend api.your-domain.example
 
-# 5) config at ~/.cloudflared/config.yml
+# 5) write the config (replace <tunnel-uuid> with the value from step 3)
 cat > ~/.cloudflared/config.yml <<'EOF'
 tunnel: wrapup-backend
-credentials-file: /home/ubuntu/.cloudflared/<tunnel-id>.json
+credentials-file: /home/ubuntu/.cloudflared/<tunnel-uuid>.json
 ingress:
   - hostname: api.your-domain.example
     service: http://localhost:8000
   - service: http_status:404
 EOF
 
-# 6) install as a systemd service
+# 6) install as a systemd service so it auto-starts on reboot
 sudo cloudflared service install
 sudo systemctl enable --now cloudflared
+
+# 7) verify the tunnel is active
+sudo systemctl status cloudflared
 ```
 
-### Set Vercel env var
+You should see `active (running)` on the last line.
 
-In the Vercel dashboard for the `wrap-up-ai-2` project, add:
+### Step B — Set the Vercel env var
 
-```
-VITE_PROD_BACKEND_WS_URL = wss://api.your-domain.example
-```
+In the Vercel dashboard for the `wrap-up-ai-2` project:
 
-Redeploy (push to main or click redeploy).
+1. Settings → Environment Variables
+2. Add a new variable:
+   - **Name:** `VITE_PROD_BACKEND_WS_URL`
+   - **Value:** `wss://api.your-domain.example` (use the same hostname you set in step 4 above)
+   - **Environments:** Production (and Preview, if you want preview branches to work too)
+3. Click Save
+4. **Redeploy** — either push any commit to `main`, or click `Redeployments → Redeploy` on the latest deployment so the new env var is baked into the bundle
 
-### Smoke-test the tunnel
+### Step C — Smoke-test from your Mac
 
 ```bash
-websocat "wss://api.your-domain.example/ws/live-transcription/smoke-test?lang=en&token=dummy"
+# HTTP smoke test through the tunnel
+curl -sI https://api.your-domain.example/healthz
+# Expect: HTTP/2 200
+
+# WebSocket handshake test (no auth — expect 4401 close, which is correct)
+curl -i -N --max-time 3 \
+  -H "Connection: Upgrade" \
+  -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  -H "Sec-WebSocket-Version: 13" \
+  https://api.your-domain.example/ws/live-transcription/smoke 2>&1 | head -3
+# Expect: HTTP/2 101 (Switching Protocols) or HTTP/2 4xx
 ```
 
-Expect a 4401 close — the route exists, auth rejected the dummy token.
+### Step D — End-to-end test in browser
+
+1. Hard-refresh <https://wrap-up-ai-2.vercel.app/dashboard/new-meeting>
+2. Pick Bengali → click Start Recording
+3. Open DevTools → Network → WS tab
+4. You should see a connection open to `wss://api.your-domain.example/ws/live-transcription/<uuid>`
+5. Speak — interim transcript should appear (gray italic), finalized chunks turn black
+6. Click Stop — backend processes, summary appears
+
+If step 4 still shows the toast "Live recording isn't available on production yet" → the env var didn't make it into the production bundle. Trigger a fresh deploy via Vercel dashboard (Redeployments → Redeploy without using cache).
 
 ---
 

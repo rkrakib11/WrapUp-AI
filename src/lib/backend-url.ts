@@ -29,6 +29,22 @@ export function getBackendCandidates(baseUrl: string = resolveBackendUrl()): str
 }
 
 /**
+ * True if the current surface can reach the backend over WebSocket.
+ * Returns false on production Vercel until VITE_PROD_BACKEND_WS_URL is set
+ * (the Cloudflare Tunnel hostname). Local web dev and Electron always
+ * return true — those surfaces don't need a separate env var because they
+ * share scheme/origin with the backend.
+ */
+export function isLiveStreamingConfigured(): boolean {
+  if (isDesktopApp()) return true;
+  if (import.meta.env.PROD) {
+    const prodWs = import.meta.env.VITE_PROD_BACKEND_WS_URL as string | undefined;
+    return Boolean(prodWs && prodWs.trim().length > 0);
+  }
+  return true;
+}
+
+/**
  * Build a WebSocket URL for backend streaming endpoints.
  *
  * Resolution order:

@@ -11,6 +11,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useMeetings } from "@/hooks/useMeetings";
 import { useSubscription } from "@/hooks/useSubscription";
 import { startSessionProcessing } from "@/lib/session-processing";
+import { isLiveStreamingConfigured } from "@/lib/backend-url";
 import { LANGUAGES } from "@/lib/languages";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -411,6 +412,16 @@ export default function NewMeetingPage() {
   }, []);
 
   const handleBeginRecording = () => {
+    // Production Vercel without a Cloudflare-Tunnel hostname can't open a
+    // WebSocket to Oracle (mixed-content + no TLS terminator). Detect that
+    // up front and steer the user to the upload flow instead of letting
+    // them navigate, fail mid-flight, and bounce back with an error toast.
+    if (!isLiveStreamingConfigured()) {
+      toast.error(
+        "Live recording isn't available on production yet. Please upload a file below, or use the desktop app for live recording.",
+      );
+      return;
+    }
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
     micStreamRef.current = null;
     setMicStream(null);
