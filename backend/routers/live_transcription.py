@@ -386,10 +386,10 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
             wav_path = Path(wav_path_str)
             await loop.run_in_executor(None, _save_raw_pcm_as_wav, spool_path, wav_path)
 
-            if container.groq_client is not None:
+            if container.groq is not None:
                 prompt = whisper_primer_for(lang)
                 model = "whisper-large-v3" if (lang and lang.lower().split("-")[0] not in ("en", "")) else None
-                result = await container.groq_client.transcribe_audio(
+                result = await container.groq.transcribe_audio(
                     wav_path, language=lang, model=model, prompt=prompt,
                 )
                 groq_text = (result.get("text") or "").strip()

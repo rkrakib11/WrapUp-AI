@@ -408,18 +408,31 @@ export default function InstantMeetingPage() {
       // 3) Capture mic as 16 kHz mono PCM. AudioContext's sampleRate option
       //    triggers automatic resampling — works on Chrome/Edge/Firefox;
       //    Safari ignores the hint but we convert in the callback anyway.
-      //    autoGainControl is intentionally OFF — when it's on, macOS keeps
-      //    silently dropping the system input level while you talk, which
-      //    visibly wrecks the meter in System Settings → Sound and starves
-      //    the encoder. echo/noise suppression stay on for clean speech.
+      //
+      //    ALL three WebRTC processors are disabled — `autoGainControl` is
+      //    the obvious one (it's what was dragging the macOS hardware input
+      //    level down while the user spoke), but on Chromium `echoCancellation`
+      //    and `noiseSuppression` internally re-enable AGC even when
+      //    autoGainControl is set to false, so we have to turn the whole
+      //    WebRTC processing chain off and rely on Deepgram for cleanup.
+      //    Vendor-prefixed `googAutoGainControl` is honoured by older
+      //    Chromium builds and is included for safety.
+      const audioConstraints: MediaTrackConstraints & Record<string, unknown> = {
+        channelCount: 1,
+        sampleRate: 16_000,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        // Chromium-only vendor-prefixed flags — not in the TS dom lib but
+        // older Chromium builds honour them, so keep them set for safety.
+        googAutoGainControl: false,
+        googAutoGainControl2: false,
+        googEchoCancellation: false,
+        googNoiseSuppression: false,
+        googHighpassFilter: false,
+      };
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16_000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: false,
-        },
+        audio: audioConstraints,
         video: false,
       });
       liveStreamRef.current = stream;
