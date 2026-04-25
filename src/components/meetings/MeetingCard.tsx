@@ -27,9 +27,22 @@ export interface MeetingCardProps {
   onDelete: (m: MeetingWithSessions) => void;
   onDownload: (m: MeetingWithSessions) => void;
   onShare: (m: MeetingWithSessions) => void;
+  selectionMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }
 
-export function MeetingCard({ meeting, index, onRename, onDelete, onDownload, onShare }: MeetingCardProps) {
+export function MeetingCard({
+  meeting,
+  index,
+  onRename,
+  onDelete,
+  onDownload,
+  onShare,
+  selectionMode = false,
+  selected = false,
+  onToggleSelect,
+}: MeetingCardProps) {
   const navigate = useNavigate();
   const title = cleanMeetingTitle(meeting.title);
   const iconStyle = getIconColor(index);
@@ -41,6 +54,9 @@ export function MeetingCard({ meeting, index, onRename, onDelete, onDownload, on
 
   const go = () => navigate(`/dashboard/meetings/${meeting.id}`);
   const stop = (e: React.MouseEvent) => e.stopPropagation();
+  const handleCardClick = () => {
+    if (selectionMode) onToggleSelect?.(meeting.id);
+  };
 
   const sentimentPill = status.sentiment
     ? status.sentiment === "positive"
@@ -51,14 +67,33 @@ export function MeetingCard({ meeting, index, onRename, onDelete, onDownload, on
     : null;
 
   return (
-    <div className="glass rounded-xl p-4 flex flex-col gap-3 hover:glow-sm transition-shadow">
+    <div
+      className={cn(
+        "glass rounded-xl p-4 flex flex-col gap-3 hover:glow-sm transition-shadow",
+        selectionMode && "cursor-pointer",
+        selectionMode && selected && "ring-2 ring-rose-500/60 bg-rose-500/5",
+      )}
+      onClick={selectionMode ? handleCardClick : undefined}
+    >
       <div className="flex items-start justify-between">
-        <div
-          className="h-10 w-10 rounded-lg flex items-center justify-center font-semibold text-sm"
-          style={iconStyle}
-          aria-hidden
-        >
-          {initial}
+        <div className="flex items-start gap-3">
+          {selectionMode && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={() => onToggleSelect?.(meeting.id)}
+              onClick={stop}
+              aria-label="Select meeting"
+              className="h-4 w-4 mt-1 accent-rose-500 cursor-pointer"
+            />
+          )}
+          <div
+            className="h-10 w-10 rounded-lg flex items-center justify-center font-semibold text-sm"
+            style={iconStyle}
+            aria-hidden
+          >
+            {initial}
+          </div>
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild onClick={stop}>

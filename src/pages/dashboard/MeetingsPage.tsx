@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowUpDown, Filter, LayoutGrid, List, Loader2, Plus, Search } from "lucide-react";
+import { ArrowUpDown, Filter, LayoutGrid, List, Loader2, Plus, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -60,7 +60,11 @@ export default function MeetingsPage() {
   const [newTitle, setNewTitle] = useState("");
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
-  const [deleteTarget, setDeleteTarget] = useState<MeetingWithSessions | null>(null);
+  // Multi-select bulk-delete state. Triggered from any row's Delete menu item.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
     if (searchParams.get("new") === "true") {
@@ -190,18 +194,47 @@ export default function MeetingsPage() {
     toast.success("Meeting renamed!");
   };
 
-  const handleConfirmDelete = async () => {
-    if (!deleteTarget) return;
-    await deleteMeeting.mutateAsync(deleteTarget.id);
-    setDeleteTarget(null);
-    toast.success("Meeting deleted!");
-  };
-
   const onRename = (m: MeetingWithSessions) => {
     setRenameId(m.id);
     setRenameTitle(m.title ?? "");
   };
-  const onDelete = (m: MeetingWithSessions) => setDeleteTarget(m);
+  // Clicking "Delete" on any row's 3-dot menu now enters multi-select mode
+  // (instead of opening a single-meeting confirm dialog), pre-selecting the
+  // row the user clicked. The user can then add more rows or hit "Cancel" /
+  // confirm via the action bar at the top of the page.
+  const onDelete = (m: MeetingWithSessions) => {
+    setSelectionMode(true);
+    setSelectedIds((prev) => new Set(prev).add(m.id));
+  };
+  const exitSelection = () => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  };
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    setBulkDeleting(true);
+    const ids = Array.from(selectedIds);
+    const results = await Promise.allSettled(
+      ids.map((id) => deleteMeeting.mutateAsync(id)),
+    );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    setBulkDeleting(false);
+    setBulkDeleteConfirmOpen(false);
+    exitSelection();
+    if (failed === 0) {
+      toast.success(`${ids.length} meeting${ids.length === 1 ? "" : "s"} deleted.`);
+    } else {
+      toast.error(`Deleted ${ids.length - failed}, failed ${failed}.`);
+    }
+  };
   const onDownload = (m: MeetingWithSessions) => {
     const sessions = m.sessions ?? [];
     const latest = [...sessions].sort(
@@ -264,6 +297,33 @@ export default function MeetingsPage() {
 
   return (
     <div className="space-y-6 pt-4">
+      {/* Bulk-delete action bar — only visible while in selection mode */}
+      {selectionMode && (
+        <div className="glass rounded-xl px-4 py-3 flex items-center gap-3 border-2 border-rose-500/40 bg-rose-500/5">
+          <span className="text-sm font-medium text-foreground">
+            {selectedIds.size === 0
+              ? "Select meetings to delete"
+              : `${selectedIds.size} selected`}
+          </span>
+          <span className="flex-1" />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exitSelection}
+          >
+            <X className="h-4 w-4 mr-1" /> Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={selectedIds.size === 0}
+            onClick={() => setBulkDeleteConfirmOpen(true)}
+          >
+            <Trash2 className="h-4 w-4 mr-1" /> Delete {selectedIds.size > 0 ? `(${selectedIds.size})` : ""}
+          </Button>
+        </div>
+      )}
+
       <div className="glass rounded-xl p-2 flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[240px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
@@ -426,6 +486,9 @@ export default function MeetingsPage() {
               onDelete={onDelete}
               onDownload={onDownload}
               onShare={onShare}
+              selectionMode={selectionMode}
+              selected={selectedIds.has(m.id)}
+              onToggleSelect={toggleSelected}
             />
           ))}
         </div>
@@ -440,6 +503,9 @@ export default function MeetingsPage() {
               onDelete={onDelete}
               onDownload={onDownload}
               onShare={onShare}
+              selectionMode={selectionMode}
+              selected={selectedIds.has(m.id)}
+              onToggleSelect={toggleSelected}
             />
           ))}
         </div>
@@ -496,20 +562,23 @@ export default function MeetingsPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+      <Dialog open={bulkDeleteConfirmOpen} onOpenChange={(open) => !bulkDeleting && setBulkDeleteConfirmOpen(open)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete meeting?</DialogTitle>
+            <DialogTitle>
+              Delete {selectedIds.size} meeting{selectedIds.size === 1 ? "" : "s"}?
+            </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            This will permanently delete this meeting and its recordings. This action cannot be undone.
+            This will permanently delete the selected meetings and their recordings.
+            This action cannot be undone.
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+            <Button variant="outline" onClick={() => setBulkDeleteConfirmOpen(false)} disabled={bulkDeleting}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={handleConfirmDelete} disabled={deleteMeeting.isPending}>
-              {deleteMeeting.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null} Delete
+            <Button variant="destructive" onClick={handleBulkDelete} disabled={bulkDeleting}>
+              {bulkDeleting ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null} Delete
             </Button>
           </DialogFooter>
         </DialogContent>

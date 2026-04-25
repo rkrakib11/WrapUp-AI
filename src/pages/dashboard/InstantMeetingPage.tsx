@@ -913,179 +913,42 @@ export default function InstantMeetingPage() {
     );
   }
 
-  // State 1 — Pre-capture card
+  // State 1 — WebSocket-unavailable notice.
+  // The setup form (mic toggle, system audio, language picker, Start Capture
+  // button) was removed: live recording on production HTTPS requires a wss://
+  // tunnel to Oracle which isn't configured yet. Once the Cloudflare Tunnel
+  // is set up and VITE_PROD_BACKEND_WS_URL is exported, the auto-start path
+  // from NewMeetingPage will succeed and route the user straight to the
+  // active recording view above (`if (inActiveView)`).
   return (
     <div className="space-y-6">
-      <div className="mx-auto w-full max-w-[560px] space-y-4">
-        {showLanguageReminderCard && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm bg-black/40">
-            <div className="mx-4 w-full max-w-sm rounded-xl border border-amber-400 bg-white dark:bg-gray-900 shadow-2xl shadow-amber-200/30 dark:shadow-amber-900/40 p-6 flex flex-col gap-4">
-              <div className="flex gap-3 items-start">
-                <Info className="h-5 w-5 text-amber-500 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-1">
-                    Language matters for accuracy
-                  </p>
-                  <p className="text-sm text-amber-700 dark:text-amber-400 leading-relaxed">
-                    Select the exact language spoken in your recording. A wrong selection can make transcript, summary, and action items inaccurate.
-                  </p>
-                </div>
-              </div>
-              <button
-                className="self-end text-sm font-semibold px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-white transition-colors"
-                onClick={() => {
-                  setShowLanguageReminderCard(false);
-                  setLanguageReminderAcknowledged(true);
-                  setLanguageOpen(true);
-                }}
-              >
-                OK, got it
-              </button>
-            </div>
+      <div className="mx-auto w-full max-w-[560px]">
+        <div className="bg-[#141828] border border-white/[0.08] rounded-2xl p-8 flex flex-col items-center gap-5 text-center">
+          <div className="h-12 w-12 rounded-full bg-rose-500/15 border border-rose-500/30 flex items-center justify-center">
+            <MicOff className="h-6 w-6 text-rose-400" />
           </div>
-        )}
-
-        <div className="bg-[#141828] border border-white/[0.08] rounded-2xl p-8 space-y-6">
-          <div className="flex flex-col items-center gap-4">
-            <div className="relative h-20 w-20 flex items-center justify-center">
-              <span
-                className="absolute inset-0 rounded-full border-2 border-[#6C3FE6] animate-pulse-ring"
-                aria-hidden
-              />
-              <span
-                className="absolute inset-0 rounded-full border-2 border-[#6C3FE6] animate-pulse-ring"
-                style={{ animationDelay: "750ms" }}
-                aria-hidden
-              />
-              <div className="h-12 w-12 rounded-full gradient-bg flex items-center justify-center relative">
-                <Mic className="h-6 w-6 text-primary-foreground" />
-              </div>
-            </div>
-            <div className="text-center space-y-1">
-              <h1 className="text-[18px] font-semibold text-foreground">Start an instant meeting</h1>
-              <p className="text-[13px] text-muted-foreground">
-                Record live · get real-time captions · auto-summary when done
-              </p>
-            </div>
+          <div className="space-y-2">
+            <h1 className="text-[18px] font-semibold text-foreground">
+              WebSocket failed to open
+            </h1>
+            <p className="text-[13px] text-muted-foreground leading-relaxed">
+              Live recording isn&apos;t available on this surface yet. Please use
+              file upload from the New Meeting page, or open the desktop app
+              for live recording with system audio.
+            </p>
           </div>
-
-          <div className="space-y-3">
-            <div className="flex items-center justify-between gap-4 rounded-xl border border-border/60 px-4 py-3">
-              <div className="flex items-start gap-3 min-w-0">
-                <Mic className="h-4 w-4 mt-0.5 text-primary shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-sm text-foreground">Microphone</p>
-                  <p className="text-xs text-muted-foreground">
-                    Capture your voice with echo cancellation
-                  </p>
-                </div>
-              </div>
-              <Switch
-                checked={captureMicrophone}
-                onCheckedChange={setCaptureMicrophone}
-                disabled={isBusy}
-              />
-            </div>
-
-            <div
-              className={cn(
-                "flex items-center justify-between gap-4 rounded-xl border border-border/60 px-4 py-3",
-                !systemAudioAvailable && "opacity-40 pointer-events-none",
-              )}
+          <div className="flex items-center gap-3 pt-2">
+            <Button variant="outline" onClick={() => navigate("/dashboard/new-meeting")}>
+              New Meeting
+            </Button>
+            <Button
+              className="gradient-bg text-primary-foreground"
+              onClick={() => navigate("/dashboard/upload")}
             >
-              <div className="flex items-start gap-3 min-w-0">
-                <Speaker className="h-4 w-4 mt-0.5 text-primary shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-sm text-foreground">System audio</p>
-                  <p className="text-xs text-muted-foreground">
-                    Capture meeting audio from your screen
-                  </p>
-                </div>
-              </div>
-              {systemAudioAvailable ? (
-                <Switch
-                  checked={captureSystemAudio}
-                  onCheckedChange={setCaptureSystemAudio}
-                  disabled={isBusy}
-                />
-              ) : (
-                <Badge variant="outline" className="shrink-0 text-[10px] font-medium">
-                  Desktop app only
-                </Badge>
-              )}
-            </div>
-
-            <div className="border-t border-white/[0.08] pt-3">
-              <div className="mb-3">
-                <p className="text-sm text-foreground mb-1">
-                  Audio language <span className="text-destructive">*</span>
-                </p>
-                <Select
-                  value={language}
-                  onValueChange={(value) => {
-                    setLanguage(value);
-                    setLanguageOpen(false);
-                  }}
-                  open={languageOpen}
-                  onOpenChange={(open) => {
-                    if (open && !languageReminderAcknowledged) {
-                      setShowLanguageReminderCard(true);
-                    } else {
-                      setLanguageOpen(open);
-                    }
-                  }}
-                >
-                  <SelectTrigger className="border-2 border-amber-500 shadow-[0_0_8px_2px_rgba(245,158,11,0.4)] hover:border-amber-400 hover:bg-amber-500/10 hover:text-amber-700 hover:shadow-[0_0_12px_3px_rgba(251,191,36,0.7)] focus:shadow-[0_0_12px_3px_rgba(245,158,11,0.6)]">
-                    <SelectValue placeholder="Select language to continue" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LANGUAGES.map((item) => (
-                      <SelectItem
-                        key={item.code}
-                        value={item.code}
-                        className="focus:bg-amber-500/15 focus:text-amber-800 dark:focus:text-amber-300"
-                      >
-                        {item.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <BackendStatusDot
-                status={backendRuntimeStatus}
-                onRetry={() => void handleRetryBackendStartup()}
-              />
-            </div>
+              Upload a file
+            </Button>
           </div>
-
-          <Button
-            className="w-full gradient-bg text-primary-foreground font-semibold"
-            onClick={() => void handleStartCapture()}
-            disabled={startDisabled}
-          >
-            <Mic className="mr-2 h-4 w-4" /> {startLabel}
-          </Button>
         </div>
-
-        {isMacDesktop && (
-          <div className="flex items-center justify-center gap-4 text-xs text-muted-foreground">
-            <button
-              type="button"
-              className="hover:text-foreground underline-offset-4 hover:underline transition-colors"
-              onClick={() => void handleOpenMacMicrophoneSettings()}
-            >
-              Allow microphone access
-            </button>
-            <span aria-hidden>·</span>
-            <button
-              type="button"
-              className="hover:text-foreground underline-offset-4 hover:underline transition-colors"
-              onClick={() => void handleOpenMacScreenRecordingSettings()}
-            >
-              Allow screen recording
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );

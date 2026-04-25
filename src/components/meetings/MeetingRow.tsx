@@ -27,6 +27,9 @@ export interface MeetingRowProps {
   onDelete: (m: MeetingWithSessions) => void;
   onDownload: (m: MeetingWithSessions) => void;
   onShare: (m: MeetingWithSessions) => void;
+  selectionMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }
 
 function StatusTag({ tone, children }: { tone: "done" | "processing" | "idle" | "failed"; children: React.ReactNode }) {
@@ -59,7 +62,17 @@ function SentimentPill({ sentiment }: { sentiment: "positive" | "neutral" | "ten
   );
 }
 
-export function MeetingRow({ meeting, index, onRename, onDelete, onDownload, onShare }: MeetingRowProps) {
+export function MeetingRow({
+  meeting,
+  index,
+  onRename,
+  onDelete,
+  onDownload,
+  onShare,
+  selectionMode = false,
+  selected = false,
+  onToggleSelect,
+}: MeetingRowProps) {
   const navigate = useNavigate();
   const title = cleanMeetingTitle(meeting.title);
   const iconStyle = getIconColor(index);
@@ -69,7 +82,15 @@ export function MeetingRow({ meeting, index, onRename, onDelete, onDownload, onS
   const status = deriveMeetingStatus(meeting);
   const hasAnyStatus = status.transcriptDone || status.summaryDone || status.momDone || status.processing;
 
-  const go = () => navigate(`/dashboard/meetings/${meeting.id}`);
+  // While in multi-select mode the entire row toggles selection instead of
+  // navigating into the meeting detail page.
+  const handleClick = () => {
+    if (selectionMode) {
+      onToggleSelect?.(meeting.id);
+      return;
+    }
+    navigate(`/dashboard/meetings/${meeting.id}`);
+  };
 
   const stop = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.stopPropagation();
@@ -79,15 +100,29 @@ export function MeetingRow({ meeting, index, onRename, onDelete, onDownload, onS
     <div
       role="button"
       tabIndex={0}
-      onClick={go}
+      onClick={handleClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          go();
+          handleClick();
         }
       }}
-      className="group flex items-center gap-4 px-4 py-5 min-h-[64px] hover:bg-accent/40 transition-colors cursor-pointer focus:outline-none focus-visible:bg-accent/40"
+      className={cn(
+        "group flex items-center gap-4 px-4 py-5 min-h-[64px] hover:bg-accent/40 transition-colors cursor-pointer focus:outline-none focus-visible:bg-accent/40",
+        selectionMode && selected && "bg-rose-500/10 hover:bg-rose-500/15",
+      )}
     >
+      {selectionMode && (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleSelect?.(meeting.id)}
+          onClick={stop}
+          aria-label="Select meeting"
+          className="h-4 w-4 shrink-0 accent-rose-500 cursor-pointer"
+        />
+      )}
+
       <div
         className="shrink-0 h-10 w-10 rounded-lg flex items-center justify-center font-semibold text-sm"
         style={iconStyle}
