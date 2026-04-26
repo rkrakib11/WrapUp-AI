@@ -576,6 +576,13 @@ export default function InstantMeetingPage() {
         .single();
       if (sessionError) throw sessionError;
       const sessionId: string = createdSession.id;
+      // Lift the freshly-created ids into React state so the Notes and
+      // Ask AI tabs (which need both meetingId + sessionId to mount their
+      // hooks) can render against them DURING the live recording — not
+      // just after Stop. The previous pinnedSessionId effect only fired
+      // for Electron desktop-capture sessions.
+      setPinnedSessionId(sessionId);
+      setEndedMeetingId(targetMeetingId);
 
       // 2) Open the WebSocket BEFORE starting the mic — if the server is
       //    unreachable we surface that error before touching the user's mic.
