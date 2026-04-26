@@ -29,7 +29,9 @@ import { useMeetings } from "@/hooks/useMeetings";
 import { useMeetingDetail } from "@/hooks/useMeetingDetail";
 import { useActionItems } from "@/hooks/useActionItems";
 import { useSessionChat, type MeetingAiChatRow } from "@/hooks/useSessionChat";
-import { useSessionNotes } from "@/hooks/useSessionNotes";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { InlineEditNote } from "@/components/instant/InlineEditNote";
 import { runNextForegroundUpload } from "@/lib/upload-queue";
 import { resolveWebSocketUrl } from "@/lib/backend-url";
 import { supabase } from "@/integrations/supabase/client";
@@ -2145,14 +2147,20 @@ function ChatRowBubbles({ row }: { row: MeetingAiChatRow }) {
   );
 }
 
+// Multi-note pattern matching MeetingDetailPage exactly: textarea + Add at
+// the top, list of saved notes below (each editable/deletable inline +
+// convertible to an action item). Backed by `useMeetingDetail` so notes
+// share the same `notes` table and live-update across the live recording
+// surface and the Meeting Detail page.
 export function NotesTabContent({
   meetingId,
-  sessionId,
 }: {
   meetingId: string | undefined;
   sessionId: string | undefined;
 }) {
-  const { notes, setNotes, isLoading, isSaving } = useSessionNotes(meetingId, sessionId);
+  const [draft, setDraft] = useState("");
+  const { notesQuery, addNote, updateNote, deleteNote } = useMeetingDetail(meetingId);
+  const { createActionItem } = useActionItems();
 
   if (!meetingId) {
     return (
@@ -2164,19 +2172,71 @@ export function NotesTabContent({
     );
   }
 
+  const handleAdd = async () => {
+    const trimmed = draft.trim();
+    if (!trimmed || addNote.isPending) return;
+    try {
+      await addNote.mutateAsync(trimmed);
+      setDraft("");
+      toast.success("Note saved");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save note");
+    }
+  };
+
+  const notes = notesQuery.data ?? [];
+
   return (
-    <div className="h-full flex flex-col gap-2">
-      <textarea
-        value={notes}
-        onChange={(e) => setNotes(e.target.value)}
-        placeholder="Type your notes here…"
-        disabled={isLoading}
-        className="w-full flex-1 min-h-[180px] bg-transparent border border-white/[0.08] focus:border-white/[0.16] rounded-md p-3 text-xs outline-none resize-none disabled:opacity-60"
-      />
-      <div className="flex items-center justify-end gap-1.5 text-[10px] text-muted-foreground h-3">
-        {isLoading && <span>Loading…</span>}
-        {!isLoading && isSaving && <span>Saving…</span>}
-        {!isLoading && !isSaving && notes.length > 0 && <span>Saved</span>}
+    <div className="h-full flex flex-col gap-3 min-h-0">
+      <div className="flex gap-2 shrink-0">
+        <Textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void handleAdd();
+            }
+          }}
+          placeholder="Add a note… (Enter to save, Shift+Enter for newline)"
+          className="min-h-[60px] text-sm"
+          disabled={addNote.isPending}
+        />
+        <Button
+          className="gradient-bg text-primary-foreground self-end"
+          onClick={() => void handleAdd()}
+          disabled={addNote.isPending || !draft.trim()}
+        >
+          Add
+        </Button>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
+        {notesQuery.isLoading && notes.length === 0 ? (
+          <p className="text-xs italic text-muted-foreground text-center py-4">
+            Loading notes…
+          </p>
+        ) : notes.length === 0 ? (
+          <p className="text-xs italic text-muted-foreground text-center py-4">
+            No notes yet. Type above and press Enter to save.
+          </p>
+        ) : (
+          notes.map((note: { id: string; content: string; updated_at: string }) => (
+            <InlineEditNote
+              key={note.id}
+              note={note}
+              onSave={(noteId, content) => {
+                updateNote.mutate({ noteId, content });
+                toast.success("Note updated");
+              }}
+              onDelete={(noteId) => deleteNote.mutate(noteId)}
+              onConvertToAction={(content) => {
+                createActionItem.mutate({ meetingId, title: content });
+                toast.success("Converted to action item");
+              }}
+            />
+          ))
+        )}
       </div>
     </div>
   );
