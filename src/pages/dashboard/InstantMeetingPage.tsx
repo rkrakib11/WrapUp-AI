@@ -2,21 +2,13 @@ import {
   BarChart3,
   Info,
   Loader2,
-  Mic,
-  MicOff,
-  PhoneOff,
+  Pause,
+  Play,
   Sparkles,
-  Speaker,
-  type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { BackendStatusDot } from "@/components/instant/BackendStatusDot";
-import { WaveformBars } from "@/components/instant/WaveformBars";
 import {
   getDesktopCaptureState,
   isDesktopCaptureAvailable,
@@ -169,6 +161,7 @@ export default function InstantMeetingPage() {
   const [webRecording, setWebRecording] = useState(false);
   const [webStopping, setWebStopping] = useState(false);
   const [autoStarting, setAutoStarting] = useState(Boolean(routeState?.autoStart && routeState?.language));
+  const [isPaused, setIsPaused] = useState(false);
 
   // Live streaming (WebSocket) refs & state for the browser recording path.
   // Desktop capture (Electron) still uses the native spool → batch flow.
@@ -181,6 +174,15 @@ export default function InstantMeetingPage() {
   const liveDoneResolveRef = useRef<((transcript: string) => void) | null>(null);
   const [liveFinals, setLiveFinals] = useState<{ speaker: number | null; text: string }[]>([]);
   const [liveInterim, setLiveInterim] = useState<string>("");
+  // Stream + AudioContext exposed to the InputLevelMeter so it can build
+  // its own AnalyserNode without re-using the worklet's source node.
+  const [liveStream, setLiveStream] = useState<MediaStream | null>(null);
+  const [liveAudioCtx, setLiveAudioCtx] = useState<AudioContext | null>(null);
+  // Pause bookkeeping: pauseStartRef holds the Date.now() at which the
+  // current pause began (null when not paused). pausedAccumRef accumulates
+  // total paused milliseconds so the elapsed timer subtracts pause time.
+  const pauseStartRef = useRef<number | null>(null);
+  const pausedAccumRef = useRef<number>(0);
   // Reflects what the browser actually agreed to do for auto-gain-control
   // on this stream. Surfaced in the Live Transcript panel so the user can
   // verify the constraint took effect without opening DevTools.
@@ -252,6 +254,24 @@ export default function InstantMeetingPage() {
     if (isRecording) setHasEntered(true);
   }, [isRecording]);
 
+  // Live stats derived from finalized speech segments — surfaced under
+  // the input meter so the user has at-a-glance context (how many
+  // distinct speakers, how many words so far) without checking the
+  // transcript pane.
+  const speakerCount = useMemo(() => {
+    const set = new Set<number>();
+    for (const f of liveFinals) {
+      if (f.speaker !== null) set.add(f.speaker);
+    }
+    return set.size;
+  }, [liveFinals]);
+  const wordCount = useMemo(() => {
+    return liveFinals.reduce(
+      (n, f) => n + f.text.trim().split(/\s+/).filter(Boolean).length,
+      0,
+    );
+  }, [liveFinals]);
+
   const inActiveView = hasEntered;
   const isEnded =
     hasEntered &&
@@ -264,14 +284,21 @@ export default function InstantMeetingPage() {
   useEffect(() => {
     if (!isRecording) {
       startRef.current = null;
+      pausedAccumRef.current = 0;
+      pauseStartRef.current = null;
       return;
     }
     startRef.current = Date.now();
+    pausedAccumRef.current = 0;
+    pauseStartRef.current = null;
     setElapsedMs(0);
     const id = window.setInterval(() => {
-      if (startRef.current != null) {
-        setElapsedMs(Date.now() - startRef.current);
-      }
+      if (startRef.current === null) return;
+      // While paused, freeze the displayed value — pauseStartRef is set
+      // when the pause began, and resumeRecording() will fold the elapsed
+      // pause into pausedAccumRef before we tick again.
+      if (pauseStartRef.current !== null) return;
+      setElapsedMs(Date.now() - startRef.current - pausedAccumRef.current);
     }, 1000);
     return () => window.clearInterval(id);
   }, [isRecording]);
@@ -329,6 +356,42 @@ export default function InstantMeetingPage() {
       try { ws.close(); } catch { /* noop */ }
     }
     liveWsRef.current = null;
+    setLiveStream(null);
+    setLiveAudioCtx(null);
+    setIsPaused(false);
+    pauseStartRef.current = null;
+    pausedAccumRef.current = 0;
+  };
+
+  const pauseRecording = () => {
+    if (!webRecording || isPaused) return;
+    // Stop sending PCM to Deepgram by disconnecting the source node from
+    // the worklet/processor. Also flip `track.enabled = false` so the
+    // browser stops processing the mic for privacy.
+    try { liveSourceRef.current?.disconnect(); } catch { /* noop */ }
+    liveStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = false; });
+    pauseStartRef.current = Date.now();
+    setIsPaused(true);
+  };
+
+  const resumeRecording = () => {
+    if (!webRecording || !isPaused) return;
+    liveStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = true; });
+    const source = liveSourceRef.current;
+    const worklet = liveWorkletRef.current;
+    const processor = liveProcessorRef.current;
+    if (source) {
+      if (worklet) {
+        try { source.connect(worklet); } catch { /* noop */ }
+      } else if (processor) {
+        try { source.connect(processor); } catch { /* noop */ }
+      }
+    }
+    if (pauseStartRef.current !== null) {
+      pausedAccumRef.current += Date.now() - pauseStartRef.current;
+      pauseStartRef.current = null;
+    }
+    setIsPaused(false);
   };
 
   const startWebRecording = async () => {
@@ -440,6 +503,7 @@ export default function InstantMeetingPage() {
         video: false,
       });
       liveStreamRef.current = stream;
+      setLiveStream(stream);
 
       // Read what the browser actually agreed to. If the track came back
       // with autoGainControl still true, surface that in the UI — that's
@@ -464,6 +528,7 @@ export default function InstantMeetingPage() {
         (window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
       ctx = new AudioCtx({ sampleRate: 16_000 });
       liveAudioCtxRef.current = ctx;
+      setLiveAudioCtx(ctx);
 
       const source = ctx.createMediaStreamSource(stream);
       liveSourceRef.current = source;
@@ -774,115 +839,105 @@ export default function InstantMeetingPage() {
             </div>
           )}
 
-          {/* ─── Top bar ─── */}
-          <div className="flex items-center gap-4 bg-[#141828] border border-white/[0.08] rounded-xl px-4 py-2.5">
-            <input
-              value={meetingTitle}
-              onChange={(e) => setMeetingTitle(e.target.value)}
-              placeholder="Meeting name…"
-              className="flex-1 min-w-0 bg-transparent border border-transparent hover:border-white/[0.08] focus:border-white/[0.12] rounded-md px-2 py-1 text-[15px] text-foreground placeholder:text-muted-foreground outline-none transition-colors"
-            />
-            <div className="flex items-center gap-2 shrink-0 font-mono text-sm">
-              <span
-                className={cn(
-                  "h-2 w-2 rounded-full",
-                  isEnded ? "bg-muted-foreground" : "bg-[#EF4444] animate-pulse",
-                )}
-                aria-hidden
-              />
-              <span className="tabular-nums">{formatHms(elapsedMs)}</span>
-              {isEnded && (
-                <span className="ml-2 text-[10px] uppercase tracking-wider text-muted-foreground">Ended</span>
-              )}
-            </div>
-            <Button
-              size="sm"
-              className="shrink-0 bg-[#EF4444] hover:bg-[#EF4444]/90 text-white"
-              onClick={onLeave}
-              disabled={stopping || captureState.status === "stopping"}
-            >
-              <PhoneOff className="mr-1.5 h-4 w-4" /> Leave
-            </Button>
-          </div>
-
           {/* ─── Main grid 60/40 ─── */}
           <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-4 flex-1 min-h-0">
             {/* LEFT column */}
             <div className="flex flex-col gap-4 min-h-0">
-              {/* Self-video tile */}
-              <div className="relative bg-[#141828] border border-white/[0.08] rounded-xl overflow-hidden flex-[65] min-h-[300px]">
-                <div className="w-full h-full flex items-center justify-center">
-                  <div className="h-24 w-24 rounded-full bg-[#6C3FE6] flex items-center justify-center text-3xl font-semibold text-white">
-                    {initials}
+              {/* Top bar — meeting name + timer (no Leave button) */}
+              <div className="flex items-center gap-3 bg-[#141828] border border-white/[0.08] rounded-xl px-4 py-2.5">
+                <input
+                  value={meetingTitle}
+                  onChange={(e) => setMeetingTitle(e.target.value)}
+                  placeholder="Meeting name…"
+                  className="flex-1 min-w-0 bg-transparent border border-transparent hover:border-white/[0.08] focus:border-white/[0.12] rounded-md px-2 py-1 text-[15px] text-foreground placeholder:text-muted-foreground outline-none transition-colors"
+                />
+                <div className="flex items-center gap-2 shrink-0 font-mono text-sm">
+                  <span
+                    className={cn(
+                      "h-2 w-2 rounded-full",
+                      isEnded
+                        ? "bg-muted-foreground"
+                        : isPaused
+                          ? "bg-amber-400"
+                          : "bg-[#EF4444] animate-pulse",
+                    )}
+                    aria-hidden
+                  />
+                  <span className="tabular-nums">{formatHms(elapsedMs)}</span>
+                  {isEnded && (
+                    <span className="ml-2 text-[10px] uppercase tracking-wider text-muted-foreground">Ended</span>
+                  )}
+                  {!isEnded && isPaused && (
+                    <span className="ml-2 text-[10px] uppercase tracking-wider text-amber-400">Paused</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Compact monitor — live input level meter + 2 controls + stats */}
+              <div className="bg-[#141828] border border-white/[0.08] rounded-xl px-4 py-4 flex flex-col gap-4">
+                <InputLevelMeter
+                  stream={liveStream}
+                  audioCtx={liveAudioCtx}
+                  paused={isPaused || isEnded}
+                />
+
+                {!isEnded ? (
+                  <div className="flex items-center justify-center gap-6">
+                    {/* Pause / Resume */}
+                    <button
+                      type="button"
+                      aria-label={isPaused ? "Resume recording" : "Pause recording"}
+                      onClick={isPaused ? resumeRecording : pauseRecording}
+                      disabled={!webRecording || stopping}
+                      className="h-12 w-12 rounded-full flex items-center justify-center bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {isPaused ? <Play className="h-5 w-5" /> : <Pause className="h-5 w-5" />}
+                    </button>
+
+                    {/* Stop */}
+                    <button
+                      type="button"
+                      aria-label="Stop recording"
+                      onClick={onLeave}
+                      disabled={stopping || captureState.status === "stopping"}
+                      className="h-14 w-14 rounded-full flex items-center justify-center bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.12] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <span className="h-5 w-5 rounded-[6px] bg-[#EF4444]" aria-hidden />
+                    </button>
                   </div>
-                </div>
+                ) : (
+                  <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                    <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" aria-hidden />
+                    Recording ended
+                  </div>
+                )}
 
-              {/* Name pill */}
-              <div className="absolute left-3 bottom-3 px-2.5 py-1 rounded-md bg-black/60 backdrop-blur text-xs text-white">
-                {displayName}
+                {/* Live stats — speakers, words, status */}
+                <div className="flex items-center justify-center gap-6 text-[11px] text-muted-foreground">
+                  <span>
+                    Speakers:{" "}
+                    <span className="font-medium tabular-nums text-foreground">
+                      {speakerCount > 0 ? speakerCount : "—"}
+                    </span>
+                  </span>
+                  <span>
+                    Words:{" "}
+                    <span className="font-medium tabular-nums text-foreground">{wordCount}</span>
+                  </span>
+                  <span>
+                    Lang:{" "}
+                    <span className="font-medium uppercase text-foreground">
+                      {language || "—"}
+                    </span>
+                  </span>
+                </div>
               </div>
 
-              {/* REC / Ended badge */}
-              {isEnded ? (
-                <div className="absolute right-3 top-3 flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur text-[10px] font-semibold uppercase tracking-wider text-white">
-                  Ended
-                </div>
-              ) : (
-                <div className="absolute right-3 top-3 flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#EF4444]/90 text-[10px] font-semibold uppercase tracking-wider text-white">
-                  <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" aria-hidden /> REC
-                </div>
-              )}
-
-              {/* Control bar */}
-              <div className="absolute left-1/2 -translate-x-1/2 bottom-14 flex items-center gap-3">
-                <ControlBtn
-                  active={!isMuted}
-                  onIcon={Mic}
-                  offIcon={MicOff}
-                  onClick={() => {
-                    setIsMuted((previouslyMuted) => {
-                      const nextMuted = !previouslyMuted;
-                      // Two recording paths share this button:
-                      //   - Electron native desktop capture
-                      //   - Web WebSocket live streaming (liveStreamRef)
-                      // Mute both. For the WS path, flipping `track.enabled`
-                      // makes the browser emit silence frames so the worklet
-                      // keeps its rhythm but Deepgram receives no speech.
-                      setDesktopCaptureMicMuted(nextMuted);
-                      const stream = liveStreamRef.current;
-                      if (stream) {
-                        for (const track of stream.getAudioTracks()) {
-                          track.enabled = !nextMuted;
-                        }
-                      }
-                      return nextMuted;
-                    });
-                  }}
-                  ariaLabel={isMuted ? "Unmute microphone" : "Mute microphone"}
-                />
-                <ControlBtn
-                  active={false}
-                  onIcon={PhoneOff}
-                  offIcon={PhoneOff}
-                  onClick={onLeave}
-                  alwaysDanger
-                  ariaLabel="Leave"
-                />
+              {/* Meeting insights */}
+              <div className="grid grid-cols-1 gap-3 flex-1 min-h-0">
+                <InsightsPanel elapsedMs={elapsedMs} isRecording={isRecording} />
               </div>
-
-              {/* Waveform strip */}
-              <WaveformBars
-                count={20}
-                className="absolute left-1/2 -translate-x-1/2 bottom-3 w-[60%] h-6"
-                barClassName="w-[3px] animate-waveform-tall"
-              />
             </div>
-
-            {/* Meeting insights */}
-            <div className="grid grid-cols-1 gap-3 flex-[35] min-h-0">
-              <InsightsPanel elapsedMs={elapsedMs} isRecording={isRecording} />
-            </div>
-          </div>
 
           {/* RIGHT sidebar */}
           <div className="flex flex-col gap-4 min-h-0">
@@ -1014,33 +1069,107 @@ export default function InstantMeetingPage() {
   return null;
 }
 
-interface ControlBtnProps {
-  active: boolean;
-  onIcon: LucideIcon;
-  offIcon: LucideIcon;
-  onClick: () => void;
-  alwaysDanger?: boolean;
-  ariaLabel: string;
-}
+// Real-time mic input level visualization. Renders a row of bars whose
+// heights track the microphone amplitude over time. Uses an AnalyserNode
+// off the live AudioContext + a canvas in a requestAnimationFrame loop
+// so we don't trigger React re-renders 60 times per second.
+function InputLevelMeter({
+  stream,
+  audioCtx,
+  paused,
+}: {
+  stream: MediaStream | null;
+  audioCtx: AudioContext | null;
+  paused: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef = useRef<number | null>(null);
+  const levelsRef = useRef<number[]>([]);
+  const pausedRef = useRef<boolean>(paused);
+  const BAR_COUNT = 60;
 
-function ControlBtn({ active, onIcon: OnIcon, offIcon: OffIcon, onClick, alwaysDanger, ariaLabel }: ControlBtnProps) {
-  const Icon = active ? OnIcon : OffIcon;
-  const danger = alwaysDanger || !active;
-  return (
-    <button
-      type="button"
-      aria-label={ariaLabel}
-      onClick={onClick}
-      className={cn(
-        "h-11 w-11 rounded-full flex items-center justify-center border transition-colors",
-        danger
-          ? "bg-[#EF4444] hover:bg-[#EF4444]/90 border-transparent text-white"
-          : "bg-[#141828]/80 hover:bg-[#141828] border-white/[0.1] text-white backdrop-blur",
-      )}
-    >
-      <Icon className="h-[18px] w-[18px]" />
-    </button>
-  );
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
+
+  useEffect(() => {
+    levelsRef.current = Array(BAR_COUNT).fill(0);
+    if (!stream || !audioCtx) return;
+
+    let source: MediaStreamAudioSourceNode | null = null;
+    let analyser: AnalyserNode | null = null;
+    let data: Uint8Array | null = null;
+    try {
+      source = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.4;
+      source.connect(analyser);
+      data = new Uint8Array(analyser.frequencyBinCount);
+    } catch {
+      return;
+    }
+
+    const tick = () => {
+      const canvas = canvasRef.current;
+      if (!canvas || !analyser || !data) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      let level = 0;
+      if (!pausedRef.current) {
+        analyser.getByteFrequencyData(data);
+        // Voice band only — skip the lowest 2 bins (DC/hum) and cap at 30.
+        let sum = 0;
+        for (let i = 2; i < 30 && i < data.length; i++) sum += data[i];
+        level = sum / (28 * 255);
+      }
+      levelsRef.current = [...levelsRef.current.slice(1), level];
+
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth;
+      const cssH = canvas.clientHeight;
+      const targetW = Math.floor(cssW * dpr);
+      const targetH = Math.floor(cssH * dpr);
+      if (canvas.width !== targetW) canvas.width = targetW;
+      if (canvas.height !== targetH) canvas.height = targetH;
+
+      const c = canvas.getContext("2d");
+      if (!c) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      c.clearRect(0, 0, canvas.width, canvas.height);
+
+      const barW = 3 * dpr;
+      const gap = 3 * dpr;
+      const totalW = (barW + gap) * BAR_COUNT - gap;
+      const startX = (canvas.width - totalW) / 2;
+      const centerY = canvas.height / 2;
+      const maxBarH = canvas.height - 4 * dpr;
+      const minBarH = 2 * dpr;
+
+      c.fillStyle = pausedRef.current ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.65)";
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const lvl = levelsRef.current[i];
+        const h = Math.max(minBarH, lvl * maxBarH);
+        const x = startX + i * (barW + gap);
+        const y = centerY - h / 2;
+        c.fillRect(x, y, barW, h);
+      }
+
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      try { source?.disconnect(); } catch { /* noop */ }
+      try { analyser?.disconnect(); } catch { /* noop */ }
+    };
+  }, [stream, audioCtx]);
+
+  return <canvas ref={canvasRef} className="w-full h-12" aria-hidden />;
 }
 
 function InsightsPanel({ elapsedMs, isRecording }: { elapsedMs: number; isRecording: boolean }) {
@@ -1290,11 +1419,10 @@ function TranscriptTabContent({
 
   if (!isEnded) {
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-4 text-center">
+      <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
         <p className="text-xs italic text-muted-foreground px-4">
           Listening… transcript will appear after processing
         </p>
-        <WaveformBars count={5} className="h-8" barClassName="w-[4px]" />
       </div>
     );
   }
