@@ -6,6 +6,7 @@ import {
   Mic,
   Pause,
   Play,
+  Send,
   Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -27,6 +28,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useMeetings } from "@/hooks/useMeetings";
 import { useMeetingDetail } from "@/hooks/useMeetingDetail";
 import { useActionItems } from "@/hooks/useActionItems";
+import { useSessionChat, type MeetingAiChatRow } from "@/hooks/useSessionChat";
+import { useSessionNotes } from "@/hooks/useSessionNotes";
 import { runNextForegroundUpload } from "@/lib/upload-queue";
 import { resolveWebSocketUrl } from "@/lib/backend-url";
 import { supabase } from "@/integrations/supabase/client";
@@ -229,8 +232,6 @@ export default function InstantMeetingPage() {
       setPinnedSessionId(captureState.sessionId);
     }
   }, [captureState.sessionId, pinnedSessionId]);
-
-  const notesKey = `instant-meeting-notes:${pinnedSessionId ?? localSessionIdRef.current}`;
 
   const [endedMeetingId, setEndedMeetingId] = useState<string | null>(null);
   const { sessionsQuery } = useMeetingDetail(endedMeetingId ?? undefined);
@@ -1266,8 +1267,18 @@ export default function InstantMeetingPage() {
                   fallbackDurationSeconds={Math.floor((elapsedMs + pausedTotalMs) / 1000)}
                 />
               )}
-              {activeTab === "askai" && <AskAITabContent />}
-              {activeTab === "notes" && <NotesTabContent storageKey={notesKey} />}
+              {activeTab === "askai" && (
+                <AskAITabContent
+                  meetingId={endedMeetingId ?? undefined}
+                  sessionId={pinnedSessionId ?? undefined}
+                />
+              )}
+              {activeTab === "notes" && (
+                <NotesTabContent
+                  meetingId={endedMeetingId ?? undefined}
+                  sessionId={pinnedSessionId ?? undefined}
+                />
+              )}
             </div>
             </div>
           </div>
@@ -1985,70 +1996,181 @@ function AnalyticsTabContent({
   );
 }
 
-function AskAITabContent() {
-  const [value, setValue] = useState("");
+// Both components take meetingId + sessionId. They re-use the existing
+// `notes` and `meeting_ai_chats` Supabase tables (same ones MeetingDetail
+// uses), and Ask AI calls the existing /sessions/{id}/ask backend endpoint.
+// Nothing new on the backend or DB — this is purely a frontend rewrite.
+
+export function AskAITabContent({
+  meetingId,
+  sessionId,
+}: {
+  meetingId: string | undefined;
+  sessionId: string | undefined;
+}) {
+  const [draft, setDraft] = useState("");
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const { messages, sendMessage, isSending, error, isLoading } = useSessionChat(meetingId, sessionId);
+
   const chips = [
     "What were the key decisions?",
     "List all action items",
-    "Who spoke the most?",
+    "Summarise the discussion",
   ];
+
+  // Auto-scroll to the latest message whenever the list changes.
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length, isSending]);
+
+  const handleSend = async () => {
+    const question = draft.trim();
+    if (!question || isSending || !meetingId || !sessionId) return;
+    setDraft("");
+    try {
+      await sendMessage(question);
+    } catch {
+      // Restore so the user can retry without retyping.
+      setDraft(question);
+    }
+  };
+
+  if (!meetingId || !sessionId) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-2 text-center px-4">
+        <p className="text-xs italic text-muted-foreground">
+          Ask AI becomes available once the recording starts.
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="h-full flex flex-col gap-3">
-      <input
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="Ask anything about this meeting…"
-        className="w-full bg-transparent border border-white/[0.08] focus:border-white/[0.16] rounded-md px-3 py-2 text-xs outline-none"
-      />
-      <div className="flex flex-wrap gap-2">
-        {chips.map((c) => (
-          <button
-            key={c}
-            type="button"
-            onClick={() => setValue(c)}
-            className="px-2.5 py-1 rounded-full border border-white/[0.1] text-[11px] text-muted-foreground hover:text-foreground hover:border-white/[0.2] transition-colors"
-          >
-            {c}
-          </button>
-        ))}
+    <div className="h-full flex flex-col gap-3 min-h-0">
+      <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
+        {isLoading && messages.length === 0 ? (
+          <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Loading chat history…
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="flex flex-col gap-3 py-2">
+            <p className="text-xs italic text-muted-foreground">
+              Ask anything about this meeting. Answers use the transcript + summary.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {chips.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setDraft(c)}
+                  disabled={isSending}
+                  className="px-2.5 py-1 rounded-full border border-white/[0.1] text-[11px] text-muted-foreground hover:text-foreground hover:border-white/[0.2] transition-colors disabled:opacity-50"
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          messages.map((row) => <ChatRowBubbles key={row.id} row={row} />)
+        )}
+        {isSending && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>Thinking…</span>
+          </div>
+        )}
+      </div>
+
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+          {error}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void handleSend();
+            }
+          }}
+          placeholder="Ask anything about this meeting…"
+          disabled={isSending}
+          className="flex-1 min-w-0 bg-transparent border border-white/[0.08] focus:border-white/[0.16] rounded-md px-3 py-2 text-xs outline-none disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={() => void handleSend()}
+          disabled={isSending || !draft.trim()}
+          className="h-8 w-8 rounded-md flex items-center justify-center bg-[#6C3FE6] hover:bg-[#6C3FE6]/90 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          aria-label="Send question"
+        >
+          <Send className="h-3.5 w-3.5" />
+        </button>
       </div>
     </div>
   );
 }
 
-function NotesTabContent({ storageKey }: { storageKey: string }) {
-  const [value, setValue] = useState("");
-  const hydratedKeyRef = useRef<string | null>(null);
+// meeting_ai_chats stores Q + A as a single row, but we render them as
+// two bubbles for chat-feel — user message then assistant message.
+function ChatRowBubbles({ row }: { row: MeetingAiChatRow }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex justify-end">
+        <div className="max-w-[85%] rounded-lg px-3 py-2 text-xs whitespace-pre-wrap leading-relaxed bg-[#6C3FE6]/20 border border-[#6C3FE6]/40 text-foreground">
+          {row.question}
+        </div>
+      </div>
+      <div className="flex justify-start">
+        <div className="max-w-[85%] rounded-lg px-3 py-2 text-xs whitespace-pre-wrap leading-relaxed bg-white/[0.04] border border-white/[0.08] text-foreground/90">
+          {row.answer}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-  useEffect(() => {
-    if (hydratedKeyRef.current === storageKey) return;
-    try {
-      const stored = window.localStorage.getItem(storageKey);
-      setValue(stored ?? "");
-    } catch {
-      setValue("");
-    }
-    hydratedKeyRef.current = storageKey;
-  }, [storageKey]);
+export function NotesTabContent({
+  meetingId,
+  sessionId,
+}: {
+  meetingId: string | undefined;
+  sessionId: string | undefined;
+}) {
+  const { notes, setNotes, isLoading, isSaving } = useSessionNotes(meetingId, sessionId);
 
-  useEffect(() => {
-    if (hydratedKeyRef.current !== storageKey) return;
-    const id = window.setTimeout(() => {
-      try {
-        window.localStorage.setItem(storageKey, value);
-      } catch {
-        /* ignore quota errors */
-      }
-    }, 500);
-    return () => window.clearTimeout(id);
-  }, [value, storageKey]);
+  if (!meetingId) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-2 text-center px-4">
+        <p className="text-xs italic text-muted-foreground">
+          Notes become available once the recording starts.
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <textarea
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      placeholder="Type your notes here…"
-      className="w-full h-full min-h-[180px] bg-transparent border border-white/[0.08] focus:border-white/[0.16] rounded-md p-3 text-xs outline-none resize-none"
-    />
+    <div className="h-full flex flex-col gap-2">
+      <textarea
+        value={notes}
+        onChange={(e) => setNotes(e.target.value)}
+        placeholder="Type your notes here…"
+        disabled={isLoading}
+        className="w-full flex-1 min-h-[180px] bg-transparent border border-white/[0.08] focus:border-white/[0.16] rounded-md p-3 text-xs outline-none resize-none disabled:opacity-60"
+      />
+      <div className="flex items-center justify-end gap-1.5 text-[10px] text-muted-foreground h-3">
+        {isLoading && <span>Loading…</span>}
+        {!isLoading && isSaving && <span>Saving…</span>}
+        {!isLoading && !isSaving && notes.length > 0 && <span>Saved</span>}
+      </div>
+    </div>
   );
 }
