@@ -1,12 +1,14 @@
 import {
+  AlertTriangle,
   BarChart3,
   Info,
   Loader2,
+  Mic,
   Pause,
   Play,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -181,8 +183,24 @@ export default function InstantMeetingPage() {
   // Pause bookkeeping: pauseStartRef holds the Date.now() at which the
   // current pause began (null when not paused). pausedAccumRef accumulates
   // total paused milliseconds so the elapsed timer subtracts pause time.
+  // pausedTotalMs mirrors pausedAccumRef but as state so the InsightsPanel
+  // re-renders the "Paused" row when a pause completes.
   const pauseStartRef = useRef<number | null>(null);
   const pausedAccumRef = useRef<number>(0);
+  const [pausedTotalMs, setPausedTotalMs] = useState(0);
+
+  // Audio device picker (Feature 1). Empty `selectedDeviceId` means the
+  // browser's default mic. Labels appear only after the first successful
+  // getUserMedia call (browser privacy: no permission → no labels).
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
+
+  // Silence warning (Feature 3). lastVoiceTsRef is updated on every
+  // requestAnimationFrame tick by InputLevelMeter via the `onLevel`
+  // callback — refs avoid 60Hz React re-renders. A 1Hz interval reads
+  // the ref and toggles silenceWarning state when the gap exceeds 10s.
+  const lastVoiceTsRef = useRef<number>(Date.now());
+  const [silenceWarning, setSilenceWarning] = useState(false);
   // Reflects what the browser actually agreed to do for auto-gain-control
   // on this stream. Surfaced in the Live Transcript panel so the user can
   // verify the constraint took effect without opening DevTools.
@@ -254,6 +272,57 @@ export default function InstantMeetingPage() {
     if (isRecording) setHasEntered(true);
   }, [isRecording]);
 
+  // ── Audio device picker effect ──
+  // Enumerate audio inputs on mount + whenever hardware changes. Labels
+  // are empty until mic permission is granted, so we also re-enumerate
+  // after the first successful getUserMedia call (handled in
+  // startWebRecording). The `devicechange` listener keeps the list fresh
+  // when the user plugs/unplugs hardware mid-session.
+  const refreshAudioDevices = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setAudioDevices(devices.filter((d) => d.kind === "audioinput"));
+    } catch {
+      /* ignore enumeration errors */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAudioDevices();
+    const handler = () => { void refreshAudioDevices(); };
+    navigator.mediaDevices?.addEventListener?.("devicechange", handler);
+    return () => {
+      navigator.mediaDevices?.removeEventListener?.("devicechange", handler);
+    };
+  }, [refreshAudioDevices]);
+
+  // ── Silence detection effect ──
+  // The InputLevelMeter calls handleMeterLevel on every frame. When the
+  // level is "loud-enough" (> 0.02 RMS-ish), we update lastVoiceTsRef.
+  // A 1Hz interval reads the ref and flips silenceWarning if the gap
+  // exceeds 10 seconds. Pausing resets the clock so resuming doesn't
+  // immediately fire a stale warning.
+  const handleMeterLevel = useCallback((level: number) => {
+    if (level > 0.02) {
+      lastVoiceTsRef.current = Date.now();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!webRecording || isPaused) {
+      setSilenceWarning(false);
+      lastVoiceTsRef.current = Date.now();
+      return;
+    }
+    lastVoiceTsRef.current = Date.now();
+    const id = window.setInterval(() => {
+      const since = Date.now() - lastVoiceTsRef.current;
+      setSilenceWarning(since > 10_000);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [webRecording, isPaused]);
+
   // Live stats derived from finalized speech segments — surfaced under
   // the input meter so the user has at-a-glance context (how many
   // distinct speakers, how many words so far) without checking the
@@ -286,12 +355,14 @@ export default function InstantMeetingPage() {
       startRef.current = null;
       pausedAccumRef.current = 0;
       pauseStartRef.current = null;
+      setPausedTotalMs(0);
       return;
     }
     startRef.current = Date.now();
     pausedAccumRef.current = 0;
     pauseStartRef.current = null;
     setElapsedMs(0);
+    setPausedTotalMs(0);
     const id = window.setInterval(() => {
       if (startRef.current === null) return;
       // While paused, freeze the displayed value — pauseStartRef is set
@@ -361,6 +432,9 @@ export default function InstantMeetingPage() {
     setIsPaused(false);
     pauseStartRef.current = null;
     pausedAccumRef.current = 0;
+    setPausedTotalMs(0);
+    setSilenceWarning(false);
+    lastVoiceTsRef.current = Date.now();
   };
 
   const pauseRecording = () => {
@@ -391,7 +465,68 @@ export default function InstantMeetingPage() {
       pausedAccumRef.current += Date.now() - pauseStartRef.current;
       pauseStartRef.current = null;
     }
+    // Publish the new total so the InsightsPanel re-renders with the
+    // updated "Paused" duration row.
+    setPausedTotalMs(pausedAccumRef.current);
     setIsPaused(false);
+  };
+
+  // Switch microphones — works before AND during recording. Before:
+  // just stores the choice; the next startWebRecording() picks it up.
+  // During: gets a fresh stream from the new device, swaps it into
+  // place, reconnects the source to the existing worklet/processor.
+  // The WebSocket stays open across the swap so live transcription
+  // continues without a Deepgram reconnect.
+  const changeAudioDevice = async (deviceId: string) => {
+    const previousId = selectedDeviceId;
+    setSelectedDeviceId(deviceId);
+    if (!webRecording || !liveAudioCtxRef.current) return;
+    const ctx = liveAudioCtxRef.current;
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16_000,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          deviceId: { exact: deviceId },
+        },
+        video: false,
+      });
+      // Disconnect the old source from worklet/processor.
+      try { liveSourceRef.current?.disconnect(); } catch { /* noop */ }
+      // Stop the old stream's tracks so the browser releases the old mic.
+      liveStreamRef.current?.getTracks().forEach((t) => t.stop());
+      liveStreamRef.current = newStream;
+      setLiveStream(newStream);
+      // Build a new MediaStreamSource on the same AudioContext, then
+      // re-wire to whichever processor was already in place.
+      const newSource = ctx.createMediaStreamSource(newStream);
+      liveSourceRef.current = newSource;
+      const worklet = liveWorkletRef.current;
+      const processor = liveProcessorRef.current;
+      if (worklet) {
+        newSource.connect(worklet);
+      } else if (processor) {
+        newSource.connect(processor);
+      }
+      // Re-honour pause state: if the user paused before swapping, keep
+      // the new track muted to avoid leaking audio while "paused".
+      if (isPaused) {
+        newStream.getAudioTracks().forEach((t) => { t.enabled = false; });
+      }
+      toast.success("Switched microphone");
+    } catch (err) {
+      // Failed swap: revert the picker to the prior choice so the UI
+      // doesn't lie about which device is active.
+      setSelectedDeviceId(previousId);
+      toast.error(
+        err instanceof Error
+          ? `Failed to switch microphone: ${err.message}`
+          : "Failed to switch microphone",
+      );
+    }
   };
 
   const startWebRecording = async () => {
@@ -497,6 +632,10 @@ export default function InstantMeetingPage() {
         googEchoCancellation: false,
         googNoiseSuppression: false,
         googHighpassFilter: false,
+        // Honour the user's mic-picker selection if any. `exact` makes
+        // the call fail (rather than silently falling back) if the chosen
+        // device is no longer present — gives us a clean error path.
+        ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {}),
       };
       stream = await navigator.mediaDevices.getUserMedia({
         audio: audioConstraints,
@@ -504,6 +643,9 @@ export default function InstantMeetingPage() {
       });
       liveStreamRef.current = stream;
       setLiveStream(stream);
+      // Permission is now granted, so device labels are populated. Refresh
+      // the picker list so users see real names instead of empty strings.
+      void refreshAudioDevices();
 
       // Read what the browser actually agreed to. If the track came back
       // with autoGainControl still true, surface that in the UI — that's
@@ -873,13 +1015,45 @@ export default function InstantMeetingPage() {
                 </div>
               </div>
 
-              {/* Compact monitor — live input level meter + 2 controls + stats */}
-              <div className="bg-[#141828] border border-white/[0.08] rounded-xl px-4 py-4 flex flex-col gap-4">
+              {/* Compact monitor — device picker + level meter + 2 controls + stats */}
+              <div className="bg-[#141828] border border-white/[0.08] rounded-xl px-4 py-4 flex flex-col gap-3">
+                {/* Device picker (Feature 1) — show only when at least
+                    one labelled device is known. Disabled in ended state. */}
+                {audioDevices.length > 0 && !isEnded && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <Mic className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <select
+                      value={selectedDeviceId}
+                      onChange={(e) => { void changeAudioDevice(e.target.value); }}
+                      className="flex-1 min-w-0 bg-transparent border border-white/[0.08] hover:border-white/[0.16] focus:border-white/[0.2] rounded-md px-2 py-1 text-xs text-foreground outline-none transition-colors"
+                      aria-label="Select microphone"
+                    >
+                      <option value="">Default microphone</option>
+                      {audioDevices.map((d, idx) => (
+                        <option key={d.deviceId || idx} value={d.deviceId}>
+                          {d.label || `Microphone ${idx + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <InputLevelMeter
                   stream={liveStream}
                   audioCtx={liveAudioCtx}
                   paused={isPaused || isEnded}
+                  onLevel={handleMeterLevel}
                 />
+
+                {/* Silence warning (Feature 3) */}
+                {silenceWarning && webRecording && !isPaused && (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-px" />
+                    <div className="flex-1 leading-relaxed">
+                      We're not hearing you for the last 10s. Check your mic, or pick a different input above.
+                    </div>
+                  </div>
+                )}
 
                 {!isEnded ? (
                   <div className="flex items-center justify-center gap-6">
@@ -935,7 +1109,11 @@ export default function InstantMeetingPage() {
 
               {/* Meeting insights */}
               <div className="grid grid-cols-1 gap-3 flex-1 min-h-0">
-                <InsightsPanel elapsedMs={elapsedMs} isRecording={isRecording} />
+                <InsightsPanel
+                  elapsedMs={elapsedMs}
+                  isRecording={isRecording}
+                  pausedMs={pausedTotalMs}
+                />
               </div>
             </div>
 
@@ -976,6 +1154,21 @@ export default function InstantMeetingPage() {
                 <Select
                   value={language}
                   onValueChange={(value) => {
+                    // Mid-recording language change confirmation (Feature 4).
+                    // The WS already opened with the original `lang`, so the
+                    // current Deepgram session won't switch — only the next
+                    // recording will use the new value. Make that explicit
+                    // before the user changes anything.
+                    if (webRecording && value !== language) {
+                      const ok = window.confirm(
+                        "Changing language won't affect this recording's transcript. " +
+                          "The new selection only applies to your next session. Continue?",
+                      );
+                      if (!ok) {
+                        setLanguageOpen(false);
+                        return;
+                      }
+                    }
                     setLanguage(value);
                     setLanguageOpen(false);
                   }}
@@ -1077,20 +1270,27 @@ function InputLevelMeter({
   stream,
   audioCtx,
   paused,
+  onLevel,
 }: {
   stream: MediaStream | null;
   audioCtx: AudioContext | null;
   paused: boolean;
+  onLevel?: (level: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number | null>(null);
   const levelsRef = useRef<number[]>([]);
   const pausedRef = useRef<boolean>(paused);
+  const onLevelRef = useRef<typeof onLevel>(onLevel);
   const BAR_COUNT = 60;
 
   useEffect(() => {
     pausedRef.current = paused;
   }, [paused]);
+
+  useEffect(() => {
+    onLevelRef.current = onLevel;
+  }, [onLevel]);
 
   useEffect(() => {
     levelsRef.current = Array(BAR_COUNT).fill(0);
@@ -1124,6 +1324,10 @@ function InputLevelMeter({
         for (let i = 2; i < 30 && i < data.length; i++) sum += data[i];
         level = sum / (28 * 255);
       }
+      // Notify parent of the current frame level (for silence detection).
+      // Refs avoid re-binding the rAF loop when the parent's callback
+      // identity changes.
+      onLevelRef.current?.(level);
       levelsRef.current = [...levelsRef.current.slice(1), level];
 
       const dpr = window.devicePixelRatio || 1;
@@ -1158,6 +1362,15 @@ function InputLevelMeter({
         c.fillRect(x, y, barW, h);
       }
 
+      // "Now" indicator (Feature 2) — a thin red vertical line at the
+      // right edge of the bar field, mirroring iOS Voice Memos. Anchors
+      // the live moment as the bars scroll past.
+      if (!pausedRef.current) {
+        const indicatorX = startX + (BAR_COUNT - 1) * (barW + gap) + barW / 2 - dpr;
+        c.fillStyle = "rgb(239, 68, 68)";
+        c.fillRect(indicatorX, 0, 2 * dpr, canvas.height);
+      }
+
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -1172,7 +1385,15 @@ function InputLevelMeter({
   return <canvas ref={canvasRef} className="w-full h-12" aria-hidden />;
 }
 
-function InsightsPanel({ elapsedMs, isRecording }: { elapsedMs: number; isRecording: boolean }) {
+function InsightsPanel({
+  elapsedMs,
+  isRecording,
+  pausedMs,
+}: {
+  elapsedMs: number;
+  isRecording: boolean;
+  pausedMs: number;
+}) {
   const [progress, setProgress] = useState({ discussion: 0, decisions: 0, actions: 0 });
   useEffect(() => {
     if (!isRecording) {
@@ -1221,6 +1442,12 @@ function InsightsPanel({ elapsedMs, isRecording }: { elapsedMs: number; isRecord
         <span>Duration</span>
         <span className="tabular-nums font-mono">{formatHms(elapsedMs)}</span>
       </div>
+      {pausedMs > 0 && (
+        <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+          <span>Paused</span>
+          <span className="tabular-nums font-mono">{formatHms(pausedMs)}</span>
+        </div>
+      )}
     </div>
   );
 }
