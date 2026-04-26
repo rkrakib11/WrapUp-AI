@@ -411,59 +411,26 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
                     wav_path.unlink(missing_ok=True)
 
     # Persist transcript and kick off the normal post-processing pipeline.
-    #
-    # Two paths:
-    # - Live transcript captured (Deepgram healthy or partially-healthy):
-    #   persist the diarized text and enqueue kind="live" — process_live_session
-    #   reuses the existing transcript and just runs summary/RAG/analytics (fast).
-    # - Live transcript empty AND we ran Groq fallback on the spool: upload the
-    #   spool WAV to R2 and enqueue kind="upload" so the full pipeline (with
-    #   pyannote diarization) runs on it. Don't persist the plain Groq text —
-    #   the upload pipeline will produce a properly diarized transcript.
+    # Always use kind="live" — process_live_session reuses the persisted
+    # transcript (Deepgram-streamed text or Groq Whisper fallback text) and
+    # runs only summary/RAG/analytics. We do NOT route through the upload
+    # pipeline even when used_groq_fallback=True — the upload pipeline
+    # requires a properly-stored audio file URL that resolve_media_url can
+    # handle, and our temp WAV doesn't fit that contract. Losing pyannote
+    # diarization on the live-Groq-fallback path is acceptable; the user
+    # gets correct text in their language, which is the priority.
     try:
-        if used_groq_fallback and container.r2 is not None and container.r2.is_available():
-            wav_fd, upload_wav_str = tempfile.mkstemp(suffix=".wav", prefix=f"liveup_{session_id}_")
-            os.close(wav_fd)
-            upload_wav_path = Path(upload_wav_str)
-            try:
-                await loop.run_in_executor(None, _save_raw_pcm_as_wav, spool_path, upload_wav_path)
-                wav_bytes = upload_wav_path.read_bytes()
-                r2_key = f"audio/{session_id}.wav"
-                await loop.run_in_executor(
-                    None,
-                    lambda: container.r2.upload_bytes(r2_key, wav_bytes, "audio/wav"),
-                )
-                await container.db.update_session(
-                    session_id,
-                    {
-                        "audio_file_url": f"r2:{r2_key}",
-                        "language_detected": (lang or "und"),
-                    },
-                )
-                await container.jobs.enqueue(
-                    session_id=session_id, user_id=user.id, kind="upload",
-                )
-                logger.info(
-                    "live_ws_routed_to_upload_pipeline",
-                    session_id=session_id,
-                    r2_key=r2_key,
-                    size_mb=round(len(wav_bytes) / 1_048_576, 2),
-                )
-            finally:
-                with contextlib.suppress(Exception):
-                    upload_wav_path.unlink(missing_ok=True)
-        else:
-            await container.db.update_session(
-                session_id,
-                {
-                    "transcript": accumulated,
-                    "language_detected": (lang or "und"),
-                },
+        await container.db.update_session(
+            session_id,
+            {
+                "transcript": accumulated,
+                "language_detected": (lang or "und"),
+            },
+        )
+        if accumulated:
+            await container.jobs.enqueue(
+                session_id=session_id, user_id=user.id, kind="live",
             )
-            if accumulated:
-                await container.jobs.enqueue(
-                    session_id=session_id, user_id=user.id, kind="live",
-                )
     except Exception as exc:
         logger.exception("live_ws_persist_or_enqueue_failed", session_id=session_id, error=str(exc))
 

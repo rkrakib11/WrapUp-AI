@@ -216,26 +216,36 @@ class SessionProcessingService:
                     session_id=session_id,
                     error=str(exc),
                 )
-                # Graceful fallback: re-transcribe with Deepgram diarization.
-                # MUST pass the user-selected language — otherwise the recovery
-                # call defaults to language-detection, which on non-English
-                # audio returns `und` → triggers the 4-language scoring loop
-                # → final pick = English (because English wins ties). This
-                # was wiping out user-selected Bangla/Hindi/Arabic uploads.
-                fallback_language = (
-                    session_language if session_language and session_language != "und" else None
-                )
-                try:
-                    transcription = await self.transcription_service.transcribe_url(
-                        media_url=media_url,
-                        diarize=True,
-                        language=fallback_language,
+                # Critical: do NOT re-transcribe if we already have usable text.
+                # Pyannote failure means we lose speaker labels, NOT the words.
+                # Re-transcribing with Deepgram on a non-English upload was
+                # wiping out the perfectly-good Groq Whisper transcript:
+                # for Bangla, Deepgram returns weak segments that the language
+                # cleaner mis-classifies as Hindi → strips ~all of it →
+                # `no_speech_detected`. Keep what we have; the user will see
+                # a single-speaker transcript instead of diarized, but the
+                # transcript text in their language survives.
+                if not transcription.transcript_text or not transcription.transcript_text.strip():
+                    fallback_language = (
+                        session_language if session_language and session_language != "und" else None
                     )
-                except Exception as retry_exc:
-                    logger.warning(
-                        "deepgram_diarization_fallback_failed",
+                    try:
+                        transcription = await self.transcription_service.transcribe_url(
+                            media_url=media_url,
+                            diarize=True,
+                            language=fallback_language,
+                        )
+                    except Exception as retry_exc:
+                        logger.warning(
+                            "deepgram_diarization_fallback_failed",
+                            session_id=session_id,
+                            error=str(retry_exc),
+                        )
+                else:
+                    logger.info(
+                        "hybrid_diarization_failed_keeping_existing_transcript",
                         session_id=session_id,
-                        error=str(retry_exc),
+                        chars=len(transcription.transcript_text),
                     )
 
         detected_language, language_confidence = await self._resolve_final_language(
