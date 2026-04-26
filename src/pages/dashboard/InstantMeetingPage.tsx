@@ -953,15 +953,16 @@ export default function InstantMeetingPage() {
 
             {/* Tab content */}
             <div className="flex-1 min-h-0 bg-[#141828] border border-white/[0.08] rounded-xl p-4 overflow-y-auto">
-              {activeTab === "transcript" && webRecording && (
+              {activeTab === "transcript" && liveFinals.length > 0 && (
                 <LiveTranscriptPanel
                   finals={liveFinals}
                   interim={liveInterim}
                   language={language}
                   micAgcEnabled={micAgcEnabled}
+                  isEnded={!webRecording}
                 />
               )}
-              {activeTab === "transcript" && !webRecording && (
+              {activeTab === "transcript" && liveFinals.length === 0 && (
                 <TranscriptTabContent
                   transcript={latestTranscript}
                   processingStatus={processingStatus}
@@ -1167,17 +1168,24 @@ function LiveTranscriptPanel({
   interim,
   language,
   micAgcEnabled,
+  isEnded = false,
 }: {
   finals: { speaker: number | null; text: string }[];
   interim: string;
   language: string;
   micAgcEnabled: boolean | null;
+  isEnded?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-3 text-sm">
       <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground flex-wrap">
-        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
-        <span>Live transcription</span>
+        <span
+          className={cn(
+            "inline-block h-2 w-2 rounded-full",
+            isEnded ? "bg-muted-foreground" : "animate-pulse bg-red-500",
+          )}
+        />
+        <span>{isEnded ? "Recording ended" : "Live transcription"}</span>
         {language && <span className="text-muted-foreground/70">• {language.toUpperCase()}</span>}
         {micAgcEnabled === false && (
           <span
@@ -1227,13 +1235,13 @@ function LiveTranscriptPanel({
             </div>
           );
         })}
-        {interim && (
+        {interim && !isEnded && (
           <div className="italic text-muted-foreground">
             {interim}
             <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60 align-middle" />
           </div>
         )}
-        {!interim && finals.length > 0 && (
+        {!interim && finals.length > 0 && !isEnded && (
           <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60 align-middle" />
         )}
       </div>
