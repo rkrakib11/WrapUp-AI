@@ -306,7 +306,13 @@ export default function InstantMeetingPage() {
   // silenceWarning when the gap exceeds 8 seconds. Pausing resets the
   // clock so resuming doesn't immediately fire a stale warning.
   const handleMeterLevel = useCallback((level: number) => {
-    if (level > 0.10) {
+    // 0.18 on the post-sqrt peak corresponds to "real speech" on most
+    // mics — fan/keyboard/breath noise hangs around 0.05-0.12 and won't
+    // cross the line. If the user moves further from the mic and stops
+    // crossing it during real speech, we'd see false positives, but the
+    // recovery is one click on the device picker so that's an OK
+    // failure mode.
+    if (level > 0.18) {
       lastVoiceTsRef.current = Date.now();
     }
   }, []);
@@ -368,10 +374,16 @@ export default function InstantMeetingPage() {
     setPausedTotalMs(0);
     const id = window.setInterval(() => {
       if (startRef.current === null) return;
-      // While paused, freeze the displayed value — pauseStartRef is set
-      // when the pause began, and resumeRecording() will fold the elapsed
-      // pause into pausedAccumRef before we tick again.
-      if (pauseStartRef.current !== null) return;
+      if (pauseStartRef.current !== null) {
+        // Paused: freeze "Recorded", but keep "Paused" + "Total" ticking
+        // by adding the elapsed pause-so-far to the accumulator. On
+        // resume, resumeRecording() will fold the same value into
+        // pausedAccumRef and clear pauseStartRef, keeping the math
+        // consistent across the boundary.
+        const livePauseMs = Date.now() - pauseStartRef.current;
+        setPausedTotalMs(pausedAccumRef.current + livePauseMs);
+        return;
+      }
       setElapsedMs(Date.now() - startRef.current - pausedAccumRef.current);
     }, 1000);
     return () => window.clearInterval(id);
@@ -1121,13 +1133,16 @@ export default function InstantMeetingPage() {
                 </div>
               </div>
 
-              {/* Meeting insights */}
-              <div className="grid grid-cols-1 gap-3 flex-1 min-h-0">
+              {/* Meeting insights — half the recording-card width,
+                  pinned to the left below it. The right half is left
+                  empty for now (placeholder for future widgets). */}
+              <div className="grid grid-cols-2 gap-4">
                 <InsightsPanel
                   elapsedMs={elapsedMs}
                   isRecording={isRecording}
                   pausedMs={pausedTotalMs}
                 />
+                <div aria-hidden />
               </div>
             </div>
 
@@ -1248,6 +1263,7 @@ export default function InstantMeetingPage() {
                   analytics={latestAnalytics}
                   processingStatus={processingStatus}
                   isEnded={isEnded}
+                  fallbackDurationSeconds={Math.floor((elapsedMs + pausedTotalMs) / 1000)}
                 />
               )}
               {activeTab === "askai" && <AskAITabContent />}
@@ -1827,10 +1843,12 @@ function AnalyticsTabContent({
   analytics,
   processingStatus,
   isEnded,
+  fallbackDurationSeconds,
 }: {
   analytics: AnalyticsPayload;
   processingStatus: string;
   isEnded: boolean;
+  fallbackDurationSeconds?: number;
 }) {
   const speaking = analytics.speaking_time_seconds && typeof analytics.speaking_time_seconds === "object"
     ? Object.entries(analytics.speaking_time_seconds)
@@ -1861,7 +1879,10 @@ function AnalyticsTabContent({
             <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Sentiment</p>
             <p className="text-sm font-medium capitalize">{analytics.sentiment ?? "unknown"}</p>
           </div>
-          <div className="rounded-md bg-white/[0.03] p-2">
+          <div
+            className="rounded-md bg-white/[0.03] p-2"
+            title="Engagement is a 0-100 score the backend computes from speaker turn-taking, word density, and tone. Higher = more interactive discussion."
+          >
             <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Engagement</p>
             <p className="text-sm font-medium">
               {typeof analytics.engagement_score === "number" ? `${Math.round(analytics.engagement_score)}%` : "n/a"}
@@ -1874,9 +1895,22 @@ function AnalyticsTabContent({
           <div className="rounded-md bg-white/[0.03] p-2">
             <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Duration</p>
             <p className="text-sm font-medium">
-              {typeof analytics.meeting_duration_seconds === "number"
-                ? formatDuration(analytics.meeting_duration_seconds)
-                : "n/a"}
+              {(() => {
+                // Prefer the backend-computed value, but fall back to
+                // the frontend's recorded duration when the backend
+                // didn't write meeting_duration_seconds (live sessions
+                // sometimes finish before analytics computes it).
+                const fromBackend = typeof analytics.meeting_duration_seconds === "number"
+                  && analytics.meeting_duration_seconds > 0
+                  ? analytics.meeting_duration_seconds
+                  : null;
+                const fallback = typeof fallbackDurationSeconds === "number"
+                  && fallbackDurationSeconds > 0
+                  ? fallbackDurationSeconds
+                  : null;
+                const value = fromBackend ?? fallback;
+                return value !== null ? formatDuration(value) : "n/a";
+              })()}
             </p>
           </div>
         </div>
