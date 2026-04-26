@@ -121,7 +121,17 @@ class PyannoteDiarizationService:
         logger.info("loading_pyannote_pipeline", model=self._MODEL_ID)
         import torch
 
-        pipeline = Pipeline.from_pretrained(self._MODEL_ID, use_auth_token=token)
+        # pyannote.audio v4 renamed `use_auth_token` -> `token`. Try the new
+        # name first (what Oracle has), fall back to the v3.x kwarg if the
+        # installed version still uses it. Without this branch, v4 raises:
+        #   Pipeline.from_pretrained() got an unexpected keyword argument 'use_auth_token'
+        # which silently disables hybrid diarization AND triggers a costly
+        # Deepgram-with-diarize fallback + 4-language recovery loop, adding
+        # ~10s per upload.
+        try:
+            pipeline = Pipeline.from_pretrained(self._MODEL_ID, token=token)
+        except TypeError:
+            pipeline = Pipeline.from_pretrained(self._MODEL_ID, use_auth_token=token)
         if torch.cuda.is_available():
             pipeline.to(torch.device("cuda"))
             logger.info("pyannote_on_gpu")
