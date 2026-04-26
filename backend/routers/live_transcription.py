@@ -374,11 +374,13 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
     # process_live_session() splitter relies on splitlines().
     accumulated = "\n".join(final_transcript_parts).strip()
 
-    # Fallback: Deepgram was degraded OR returned empty — re-transcribe the
-    # spooled audio via Groq Whisper batch. Runs the same denoise + primer
-    # path that uploads use.
+    # Fallback: only when we have NO usable live text. `deepgram_degraded`
+    # is sticky once tripped (10 consecutive empty finals — often just a
+    # quiet pause), so don't trigger re-transcription on it alone — that
+    # would discard good `Speaker N:` lines collected before the silence.
+    # Re-transcribe ONLY when accumulated is empty AND we have audio.
     used_groq_fallback = False
-    if (deepgram_degraded or not accumulated) and spool_path.stat().st_size > 0:
+    if not accumulated and spool_path.stat().st_size > 0:
         wav_path: Path | None = None
         try:
             wav_fd, wav_path_str = tempfile.mkstemp(suffix=".wav", prefix=f"live_{session_id}_")
@@ -409,18 +411,59 @@ async def live_transcription(websocket: WebSocket, session_id: str) -> None:
                     wav_path.unlink(missing_ok=True)
 
     # Persist transcript and kick off the normal post-processing pipeline.
+    #
+    # Two paths:
+    # - Live transcript captured (Deepgram healthy or partially-healthy):
+    #   persist the diarized text and enqueue kind="live" — process_live_session
+    #   reuses the existing transcript and just runs summary/RAG/analytics (fast).
+    # - Live transcript empty AND we ran Groq fallback on the spool: upload the
+    #   spool WAV to R2 and enqueue kind="upload" so the full pipeline (with
+    #   pyannote diarization) runs on it. Don't persist the plain Groq text —
+    #   the upload pipeline will produce a properly diarized transcript.
     try:
-        await container.db.update_session(
-            session_id,
-            {
-                "transcript": accumulated,
-                "language_detected": (lang or "und"),
-            },
-        )
-        if accumulated:
-            await container.jobs.enqueue(
-                session_id=session_id, user_id=user.id, kind="live",
+        if used_groq_fallback and container.r2 is not None and container.r2.is_available():
+            wav_fd, upload_wav_str = tempfile.mkstemp(suffix=".wav", prefix=f"liveup_{session_id}_")
+            os.close(wav_fd)
+            upload_wav_path = Path(upload_wav_str)
+            try:
+                await loop.run_in_executor(None, _save_raw_pcm_as_wav, spool_path, upload_wav_path)
+                wav_bytes = upload_wav_path.read_bytes()
+                r2_key = f"audio/{session_id}.wav"
+                await loop.run_in_executor(
+                    None,
+                    lambda: container.r2.upload_bytes(r2_key, wav_bytes, "audio/wav"),
+                )
+                await container.db.update_session(
+                    session_id,
+                    {
+                        "audio_file_url": f"r2:{r2_key}",
+                        "language_detected": (lang or "und"),
+                    },
+                )
+                await container.jobs.enqueue(
+                    session_id=session_id, user_id=user.id, kind="upload",
+                )
+                logger.info(
+                    "live_ws_routed_to_upload_pipeline",
+                    session_id=session_id,
+                    r2_key=r2_key,
+                    size_mb=round(len(wav_bytes) / 1_048_576, 2),
+                )
+            finally:
+                with contextlib.suppress(Exception):
+                    upload_wav_path.unlink(missing_ok=True)
+        else:
+            await container.db.update_session(
+                session_id,
+                {
+                    "transcript": accumulated,
+                    "language_detected": (lang or "und"),
+                },
             )
+            if accumulated:
+                await container.jobs.enqueue(
+                    session_id=session_id, user_id=user.id, kind="live",
+                )
     except Exception as exc:
         logger.exception("live_ws_persist_or_enqueue_failed", session_id=session_id, error=str(exc))
 
