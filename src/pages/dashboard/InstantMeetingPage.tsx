@@ -298,13 +298,15 @@ export default function InstantMeetingPage() {
   }, [refreshAudioDevices]);
 
   // ── Silence detection effect ──
-  // The InputLevelMeter calls handleMeterLevel on every frame. When the
-  // level is "loud-enough" (> 0.02 RMS-ish), we update lastVoiceTsRef.
-  // A 1Hz interval reads the ref and flips silenceWarning if the gap
-  // exceeds 10 seconds. Pausing resets the clock so resuming doesn't
-  // immediately fire a stale warning.
+  // The InputLevelMeter calls handleMeterLevel on every frame with a
+  // post-sqrt level in [0,1]. We only count a frame as "voice" when the
+  // level crosses the floor — 0.10 is well above ambient noise on
+  // typical mics but easily reached by normal speech. Refs avoid 60Hz
+  // React re-renders. A 1Hz interval reads the ref and flips
+  // silenceWarning when the gap exceeds 8 seconds. Pausing resets the
+  // clock so resuming doesn't immediately fire a stale warning.
   const handleMeterLevel = useCallback((level: number) => {
-    if (level > 0.02) {
+    if (level > 0.10) {
       lastVoiceTsRef.current = Date.now();
     }
   }, []);
@@ -318,7 +320,7 @@ export default function InstantMeetingPage() {
     lastVoiceTsRef.current = Date.now();
     const id = window.setInterval(() => {
       const since = Date.now() - lastVoiceTsRef.current;
-      setSilenceWarning(since > 10_000);
+      setSilenceWarning(since > 8_000);
     }, 1000);
     return () => window.clearInterval(id);
   }, [webRecording, isPaused]);
@@ -352,10 +354,11 @@ export default function InstantMeetingPage() {
 
   useEffect(() => {
     if (!isRecording) {
+      // Don't reset pausedTotalMs here — the user just clicked Stop and
+      // the ended-state Insights panel needs to display the final value.
+      // We reset it only when STARTING a new recording (below).
       startRef.current = null;
-      pausedAccumRef.current = 0;
       pauseStartRef.current = null;
-      setPausedTotalMs(0);
       return;
     }
     startRef.current = Date.now();
@@ -432,7 +435,8 @@ export default function InstantMeetingPage() {
     setIsPaused(false);
     pauseStartRef.current = null;
     pausedAccumRef.current = 0;
-    setPausedTotalMs(0);
+    // Intentionally NOT clearing pausedTotalMs — InsightsPanel renders
+    // it after Stop. It gets reset when a fresh recording starts.
     setSilenceWarning(false);
     lastVoiceTsRef.current = Date.now();
   };
@@ -738,6 +742,15 @@ export default function InstantMeetingPage() {
   };
 
   const stopWebRecording = async () => {
+    // If the user clicks Stop while paused, fold the in-flight pause
+    // duration into the accumulator first, so the final pausedTotalMs
+    // reflects the full paused time including the trailing pause.
+    if (pauseStartRef.current !== null) {
+      pausedAccumRef.current += Date.now() - pauseStartRef.current;
+      pauseStartRef.current = null;
+    }
+    setPausedTotalMs(pausedAccumRef.current);
+
     const ws = liveWsRef.current;
     if (!ws) {
       teardownLiveStreaming();
@@ -1017,15 +1030,16 @@ export default function InstantMeetingPage() {
 
               {/* Compact monitor — device picker + level meter + 2 controls + stats */}
               <div className="bg-[#141828] border border-white/[0.08] rounded-xl px-4 py-4 flex flex-col gap-3">
-                {/* Device picker (Feature 1) — show only when at least
-                    one labelled device is known. Disabled in ended state. */}
+                {/* Device picker (Feature 1) — compact pill on the
+                    left, not full width. Show only when at least one
+                    labelled device is known. Hidden in ended state. */}
                 {audioDevices.length > 0 && !isEnded && (
                   <div className="flex items-center gap-2 text-xs">
                     <Mic className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                     <select
                       value={selectedDeviceId}
                       onChange={(e) => { void changeAudioDevice(e.target.value); }}
-                      className="flex-1 min-w-0 bg-transparent border border-white/[0.08] hover:border-white/[0.16] focus:border-white/[0.2] rounded-md px-2 py-1 text-xs text-foreground outline-none transition-colors"
+                      className="max-w-[220px] truncate bg-transparent border border-white/[0.08] hover:border-white/[0.16] focus:border-white/[0.2] rounded-md px-2 py-1 text-xs text-foreground outline-none transition-colors"
                       aria-label="Select microphone"
                     >
                       <option value="">Default microphone</option>
@@ -1319,10 +1333,18 @@ function InputLevelMeter({
       let level = 0;
       if (!pausedRef.current) {
         analyser.getByteFrequencyData(data);
-        // Voice band only — skip the lowest 2 bins (DC/hum) and cap at 30.
-        let sum = 0;
-        for (let i = 2; i < 30 && i < data.length; i++) sum += data[i];
-        level = sum / (28 * 255);
+        // Voice band only — skip the lowest 2 bins (DC/hum) and cap at
+        // bin 30 (~1 kHz on a 16 kHz stream is about where speech
+        // information density peaks). Use the PEAK across the band, not
+        // the average — average smears speech into ambient noise and
+        // makes silence look identical to talking. Then apply a sqrt
+        // perceptual curve so quiet voices still show as visible bars
+        // while loud speech doesn't immediately clip.
+        let peak = 0;
+        for (let i = 2; i < 30 && i < data.length; i++) {
+          if (data[i] > peak) peak = data[i];
+        }
+        level = Math.sqrt(peak / 255);
       }
       // Notify parent of the current frame level (for silence detection).
       // Refs avoid re-binding the rAF loop when the parent's callback
@@ -1439,15 +1461,17 @@ function InsightsPanel({
         ))}
       </div>
       <div className="mt-3 pt-3 border-t border-white/[0.06] flex items-center justify-between text-[11px] text-muted-foreground">
-        <span>Duration</span>
+        <span>Recorded</span>
         <span className="tabular-nums font-mono">{formatHms(elapsedMs)}</span>
       </div>
-      {pausedMs > 0 && (
-        <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
-          <span>Paused</span>
-          <span className="tabular-nums font-mono">{formatHms(pausedMs)}</span>
-        </div>
-      )}
+      <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+        <span>Paused</span>
+        <span className="tabular-nums font-mono">{formatHms(pausedMs)}</span>
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+        <span>Total</span>
+        <span className="tabular-nums font-mono">{formatHms(elapsedMs + pausedMs)}</span>
+      </div>
     </div>
   );
 }
