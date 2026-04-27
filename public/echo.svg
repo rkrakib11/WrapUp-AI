@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
-  <title>Chatbot Icon - Option 1: Electric Blue + Cyan</title>
+  <title>Chatbot Icon</title>
 
   <!-- Outer glow ring -->
   <circle cx="100" cy="100" r="90" fill="none" stroke="#38ECFF" stroke-width="2" stroke-dasharray="8 5" opacity="0.6"/>
@@ -35,7 +35,4 @@
   <circle cx="22" cy="100" r="8" fill="#1141C7" stroke="#38ECFF" stroke-width="1.5"/>
   <circle cx="178" cy="100" r="8" fill="#1141C7" stroke="#38ECFF" stroke-width="1.5"/>
 
-  <!-- Label -->
-  <text x="100" y="168" font-family="monospace" font-size="11" fill="#38ECFF" text-anchor="middle" opacity="0.9">Option 1</text>
-  <text x="100" y="182" font-family="monospace" font-size="9" fill="#7AADFF" text-anchor="middle">Electric Blue + Cyan</text>
 </svg>
