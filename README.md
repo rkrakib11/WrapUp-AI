@@ -474,10 +474,10 @@ cd wrapup-ai
 # Install dependencies
 npm install
 
-# Create environment file
+# Create environment file (covers both frontend VITE_* vars and backend keys)
 cp .env.example .env
-# Edit .env and fill in:
-# VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_STRIPE_PUBLISHABLE_KEY
+# Edit .env and fill in all required values
+# (see the Environment Variables section below for the full list)
 
 # Start development server
 npm run dev
@@ -496,11 +496,12 @@ source .venv/bin/activate        # macOS/Linux
 pip install -r requirements.txt
 
 # Set up environment variables
-# Create a .env file in the root with all backend keys (see Environment Variables section)
+# The same root .env file covers both frontend and backend keys.
+# If you haven't already: cp .env.example .env  — then fill in all values.
 
 # Start backend server
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8003 --reload
-# Runs at http://localhost:8003
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8002 --reload
+# Runs at http://localhost:8002
 ```
 
 ### 4. Desktop App (Electron)
@@ -546,7 +547,7 @@ flutter run -d android
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your_anon_key
-VITE_BACKEND_URL=http://127.0.0.1:8003
+VITE_BACKEND_URL=http://127.0.0.1:8002
 VITE_STRIPE_PUBLISHABLE_KEY=pk_live_...
 ```
 
